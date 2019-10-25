@@ -1,6 +1,5 @@
-using Salsa
-using Test
+using Testy
 
 @testset "Salsa.jl" begin
-    # Write your own tests here.
+    include("Salsa.jl")
 end
