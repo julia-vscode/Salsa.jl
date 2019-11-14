@@ -25,6 +25,29 @@ function extend!(ast::Ast, source::String)
     ast
 end
 
+@testset "input parsing" begin
+    # TODO: This test is broken: we don't support comments in the @querygroup
+    @test_broken @macroexpand Salsa.@querygroup MyQueryGroup begin
+        # Currently can't handle comments inside the block
+        @input function manifest(db) :: Manifest end
+    end isa Expr
+
+    # Test expected parse errors:
+
+    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
+        Salsa.@input "input must be a function"
+    end
+    # Must be the _actual_ Salsa.@input macro
+    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
+        SomeOtherModule.@input function manifest(db) :: Manifest end
+    end
+    # Other arbitrary macros aren't supported
+    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
+        @generated function manifest(db) :: Manifest end
+    end
+end
+
+
 Salsa.@querygroup MyQueryGroup begin
     Salsa.@input function manifest(db) :: Manifest end
     Salsa.@input function source_text(db, name::String) :: String end

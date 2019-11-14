@@ -11,13 +11,13 @@ module Salsa
 export @querygroup, @query, @input
 
 # TODO (TJG):
-# - Fix @input implementation
 # - Mutable-until-shared discipline
 #   - branch() / ismutable() methods
 # - Add a derived_call_active flag
 #   - Wrappers for derived methods set/clear this
 #   - Input read methods check flag and skip dependency tracking if not set
 #   - Input write methods panic if flag is set
+# - [NHD] Allow comments / docstrings within the QueryGroup macro?
 
 import MacroTools
 
@@ -250,21 +250,41 @@ function field_def(q :: QueryInfo)
     :( $(map_name(q)) :: $(map_type(q)) )
 end
 
+# A structure only used during macro parsing to represent a user's `@input` declaration
+struct InputDeclaration
+    def
+end
+
+# Implements the `@input` macro; invoked via `@macroexpand` during parsing to transform the
+# user's Expr into an InputDeclaration.
+function parse_input_def(def)
+    InputDeclaration(def)
+end
+
 """
-    gather_queries(defs)
+    gather_queries(m::Module, defs)
 
 An internal parsing routine that iterates through the list of queries and
 inputs in query group specification and constructs a `QueryInfo` struct for
 each.
 """
-function gather_queries(defs)
+function gather_queries(m::Module, defs)
     queries = Vector{QueryInfo}()
 
     for def in defs
-        input = def isa Expr && def.head == :macrocall #&&
-#            (def.args[1] == Symbol("@input") || def.args[1] == Symbol("Salsa.@input"))
-        if input
-            def = def.args[end]
+        isinput = false
+
+        # If we encounter a macro call within the QueryGroup, it might be an `@input`.
+        # We expand the macrocall to allow the `@input` macro to run, and if it wasn't our
+        # macro, we leave the expanded code alone (since it's always fine to expand early).
+        if def isa Expr && def.head == :macrocall
+            expanded = macroexpand(m, def)
+            if expanded isa InputDeclaration
+                isinput = true
+                def = expanded.def
+            else
+                error("Unsupported macro in block argument to @querygroup: $def")
+            end
         end
 
         if def isa Expr && def.head == :function
@@ -276,7 +296,7 @@ function gather_queries(defs)
             args = dict[:args][2:end]
             value = dict[:rtype]
 
-            query = QueryInfo(name, args, value, input)
+            query = QueryInfo(name, args, value, isinput)
             push!(queries, query)
         else
             error("Unexpected expression in block argument to @querygroup: $def")
@@ -445,13 +465,13 @@ function construct_defs(name, queries::Vector{QueryInfo})
     return result
 end
 
-function querygroup(name, ex::Expr)
+function querygroup(m::Module, name, ex::Expr)
     ex = MacroTools.rmlines(ex)
 
     MacroTools.@capture(ex, begin defs__ end) ||
         error("Second argument to @querygroup is expected to be a block expression")
 
-    queries = gather_queries(defs)
+    queries = gather_queries(m, defs)
     global __debug_queries = queries
     defs = construct_defs(name, queries)
     return defs
@@ -465,7 +485,7 @@ the macro, along with maps for input fields and derived queries as specified
 by the function prototypes in the passed `ex` block.
 """
 macro querygroup(name, ex)
-    return esc(querygroup(name, ex))
+    return esc(querygroup(__module__, name, ex))
 end
 
 """
@@ -474,7 +494,7 @@ end
 Annotation macro to mark input fields of query groups.
 """
 macro input(ex)
-    ex
+    parse_input_def(ex)
     #esc(isa(ex, Expr) ? pushmeta!(ex, :salsa_input) : ex)
 end
 
