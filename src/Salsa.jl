@@ -224,6 +224,16 @@ function key_def(q :: QueryInfo)
         return :(a.$argname == b.$argname)
     end
     argnames = Any[arg.args[1] for arg in q.args]
+
+    # Build expression for `key_to_tuple`
+    if length(argnames) == 1
+        tupling = :( return a.$(argnames[1]) )
+        # Elide tupling for simple keys
+    else
+        # Concatenate the fields of `a` into a tuple for compound keys
+        tupling = :( return ($(map(arg -> :(a.$arg), argnames)...),) )
+    end
+
     :(
         struct $name <: $(q.isinput ? InputKey : DerivedKey)
             $(q.args...)
@@ -240,8 +250,7 @@ function key_def(q :: QueryInfo)
         end
         ;
         function $(@__MODULE__()).key_to_tuple(a :: $name)
-            # Concatenate the fields of `a` into a tuple
-            return ($(map(arg -> :(a.$arg), argnames)...),)
+            $tupling
         end
     )
 end

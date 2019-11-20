@@ -112,6 +112,10 @@ end
 
     @test db.__whole_program_ast_map[WholeProgramAstKey()].changed_at == 4
     @test db.__whole_program_ast_map[WholeProgramAstKey()].verified_at == 4
+
+    # NOTE: users should not be calling `keys()` in derived queries, since it won't get added to dependency graph.
+    filenames = sort([ name for name = keys(db.source_text) ])
+    @test filenames == ["a.rs", "b.rs"]
 end
 
 const bench_scale = 100000
