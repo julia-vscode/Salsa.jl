@@ -18,6 +18,7 @@ export @querygroup, @query, @input
 #   - Input read methods check flag and skip dependency tracking if not set
 #   - Input write methods panic if flag is set
 # - [NHD] Allow comments / docstrings within the QueryGroup macro?
+# - [NHD] Namespace the Key structs so different DBs can have inputs with the same name?
 
 import MacroTools
 

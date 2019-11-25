@@ -118,6 +118,274 @@ end
     @test filenames == ["a.rs", "b.rs"]
 end
 
+# ----------------------------------
+
+Salsa.@querygroup ScalarValues begin
+    Salsa.@input function sv(db) :: Int end
+    Salsa.@input function arrayval(db) :: Vector{Int} end
+end
+
+@testset "scalar values in QueryGroup" begin
+    @testset "default scalar values?" begin
+        # TODO: *is* this broken? Maybe it's intended behavior (i.e. no default values)
+        @test_broken ScalarValues().sv[] == 0
+        @test_broken ScalarValues().arrayval[] == []
+    end
+
+    db = ScalarValues()
+
+    # Assignment to the scalar value
+    db.sv[] = 1
+    @test db.sv[] == 1
+
+    # Assignment to the scalar value
+    db.arrayval[] = Int[]
+    push!(db.arrayval[], 10)
+    @test db.arrayval[] == [10]
+end
+
+# ----------------------------------
+
+Salsa.@querygroup ErrorHandling begin
+    Salsa.@input function v(db) :: Int end
+    function square_root(db) :: Float64 end
+end
+Salsa.@query function square_root(db::ErrorHandling)
+    sqrt(db.v[])
+end
+
+@testset "Robust to queries that throw errors" begin
+    db = ErrorHandling()
+
+    # Setting a value that should work as expected
+    db.v[] = 1
+    @test square_root(db) == 1
+
+    # Setting a value that will cause square_root() to throw an Exception
+    db.v[] = -1
+    @test_throws DomainError square_root(db)
+
+    # Now test that it's recovered gracefully from the error, and we can still use the DB
+    db.v[] = 1
+    @test_broken square_root(db) == 1  # ERROR: "Cycle in active query"
+end
+
+# ----------------------------------
+Salsa.@querygroup MapAggregatesDB begin
+    Salsa.@input function map(db, k::Int) :: Int end
+
+    function numelts(db) :: Int end
+    function mapkeys(db) :: Vector{Int} end
+    function mapvals(db) :: Vector{Int} end
+    function valsum(db) :: Int end
+    function keysum(db) :: Int end
+
+    # This actually loops over the elements, ∴ _touches_ them.
+    function looped_valsum(db) :: Int end
+end
+
+Salsa.@query function numelts(db::MapAggregatesDB)
+    length(db.map)
+end
+
+Salsa.@query mapvals(db::MapAggregatesDB) = sort(collect(values(db.map)))
+Salsa.@query mapkeys(db::MapAggregatesDB) = sort(collect(keys(db.map)))
+Salsa.@query function valsum(db::MapAggregatesDB)
+    sum(values(db.map))
+end
+Salsa.@query function keysum(db::MapAggregatesDB)
+    sum(keys(db.map))
+end
+Salsa.@query function looped_valsum(db::MapAggregatesDB)
+    out = 0
+    for (k,v) in db.map ; out += v ; end
+    out
+end
+
+@testset "Operations over map keys" begin
+    @testset "default map values?" begin
+        @test length(MapAggregatesDB().map) == 0
+        @test isempty(values(MapAggregatesDB().map))
+        @test isempty(MapAggregatesDB().map)
+    end
+
+    @testset "keys over a map" begin
+        db = MapAggregatesDB()
+        db.map[1] = 10
+        # TODO Collect fails on return value of keys():
+        # Cannot `convert` an object of type Int64 to an object of type Main.SalsaTest.MapKey
+        @test_broken sort(collect(keys(db.map))) == [1]
+
+        # Verify updates
+        db.map[2] = 20
+        @test_broken sort(collect(keys(db.map))) == [1,2]
+    end
+
+    @testset "vals over a map" begin
+        db = MapAggregatesDB()
+        db.map[1] = 10
+        @test collect(values(db.map)) == [10]
+
+        # Now update the map and verify that the values do indeed update
+        db.map[2] = 20
+        # NOTE: keys(Salsa.Map) is currently not supported
+        @test sort(collect(values(db.map))) == [10, 20]
+    end
+end
+
+@testset "Map Inputs Aggregates" begin
+    db = MapAggregatesDB()
+
+    # Can call derived query without initializing the field
+    @test numelts(db) == 0
+    @test mapvals(db) == []
+    @test valsum(db) == 0
+    @test_broken mapkeys(db) == []  # NOTE: keys is broken in general
+    @test_broken keysum(db) == 0  # NOTE: keys is broken in general
+    # The version that loops over the (k,v) items, and therefore actually touches them.
+    @test looped_valsum(db) == 0
+
+    # If you update the values, the derived queries update.
+    # NOTE: These are broken because currently _aggregate_ operations aren't dirtying the
+    # Map's changed-at value
+    db.map[1] = 10
+    db.map[2] = 20
+    @test_broken numelts(db) == 2
+    @test_broken mapvals(db) == [10,20]
+    @test_broken valsum(db) == 30
+    @test_broken mapkeys(db) == [1,2]  # NOTE: keys is broken in general
+    @test_broken keysum(db) == 3  # NOTE: keys is broken in general
+    # NOTE: Surprisingly, even this isn't updated, which surprises me since it's similar
+    # to the above `whole_program_ast` example.
+    @test_broken looped_valsum(db) == 30
+end
+
+# ----------------------------------
+
+# Allow functions with multiple methods
+@test_broken @eval begin
+    Salsa.@querygroup MultiMethodFunctions begin
+        function f(db) :: Any end
+        function f(db, arg::Any) :: Any end
+        function f(db, arg::Int) :: Int end
+    end
+    f(db) = 1
+    f(db, arg::Any) = arg
+    f(db, arg::Int) = arg
+end
+
+# ----------------------------------
+
+Salsa.@querygroup AbstractTypes begin
+    # Store abstract types in Input
+    Salsa.@input function in_scalar(db) :: Any end
+    Salsa.@input function in_parametric(db) :: Vector end  # matches any kind of Vector
+    Salsa.@input function in_vec_of_any(db) :: Vector{Any} end  # only matches Vector{Any}
+    Salsa.@input function in_int_vector(db) :: Vector{Int} end  # Should be able to initialize with []
+
+    # Compute abstract types in derived  queries
+    function derived_scalar(db) :: Any end
+    function derived_parametric(db) :: Vector end  # matches any kind of Vector
+    function derived_vec_of_any(db) :: Vector{Any} end  # Can be constructed from any returned Vector
+
+    # Accept abstract params
+    function derived_scalar_arg(db, arg::Any) :: Any end
+    function derived_parametric_arg(db, arg::Vector) :: Vector end
+    function derived_vec_of_any_arg(db, arg::Vector{Any}) :: Vector{Any} end
+end
+
+Salsa.@query derived_scalar(db::AbstractTypes) = 1
+Salsa.@query derived_parametric(db::AbstractTypes) = [1,2,3]
+Salsa.@query derived_vec_of_any(db::AbstractTypes) = [1,2,3]  # This will throw an Error
+
+Salsa.@query derived_scalar_arg(db::AbstractTypes, arg::Any) = arg
+Salsa.@query derived_parametric_arg(db::AbstractTypes, arg::Vector) = arg
+Salsa.@query derived_vec_of_any_arg(db::AbstractTypes, arg::Vector{Any}) = arg
+
+@testset "Returning AbstractTypes from QueryGroup" begin
+    @testset "Assigning subtypes to Abstract Inputs" begin
+        @test_broken AbstractTypes().in_scalar[] = 1  # Assignment of subtype fails
+        @test_broken AbstractTypes().in_parametric[] = [1,2,3]
+
+        # We should _probably_ be able to construct from a vector of Ints, since normal structs can:
+        # ``` module M struct S x::Vector{Any} end end;   M.S([1,2])  # succeeds ```
+        @test_broken AbstractTypes().in_vec_of_any[] = [1,2,3]
+        @test (AbstractTypes().in_vec_of_any[] = []; true)
+
+        # Should be able to construct a Vector{Int} with `[]`
+        @test_broken AbstractTypes().in_int_vector[] = []
+    end
+
+    @testset "Returning subtypes from derived functions" begin
+        # NOTE that you cannot infer the results of these functions, because the map holds
+        # an abstract type for the return value.
+        @test_broken derived_scalar(AbstractTypes()) == 1  # Returning subtype
+        @test_broken derived_parametric(AbstractTypes()) == [1,2,3]  # Returning subtype
+
+        @test_broken derived_vec_of_any(AbstractTypes()) == Any[1,2,3]  # Return value is `convert`able to Vecotr{Any}
+    end
+
+    @testset "Functions accept subtypes of Argument specifiers" begin
+        @test_broken derived_scalar_arg(AbstractTypes(), 1) == 1  # Pass subtype
+        @test_broken derived_parametric_arg(AbstractTypes(), [1,2,3]) == [1,2,3]  # Pass subtype
+
+        @test_throws MethodError derived_vec_of_any_arg(AbstractTypes(), [1,2,3])  # Can't pass Vector{Int} to Vector{Any}
+        @test derived_vec_of_any_arg(AbstractTypes(), Any[1,2,3]) == Any[1,2,3]  # Return value is `convert`able to Vecotr{Any}
+    end
+end
+
+# ------------------------------------------
+
+@testset "bad input" begin
+    # This shouldn't parse, but it does, because apparently `struct S Vector{Int} end` is
+    # valid Julia, and it just ignores the weird type in there....
+    # We should probably catch this because it's easy to accidentally write this (i've
+    # done it already).
+    @test_broken begin
+        # TODO: This should throw an exception: @test_throws Exception
+        @eval Salsa.@querygroup Test begin
+            Salsa.@input function arraymap(db, Vector{Int}) :: Int end
+        end
+        # Evalutate to false to represent the "brokenness", because can't compose
+        # `@test_broken` and `@test_throws`.
+        false
+    end
+end
+@testset "weird inputs" begin
+    # But we _should_ probably be able to accept this one; why does the user need to name
+    # the keys in the input function?
+    @test_broken @eval begin
+        Salsa.@querygroup Test begin
+            Salsa.@input function arraymap(db, ::Vector{Int}) :: Int end
+        end
+        true
+    end
+end
+
+# -------------------------------------------
+
+Salsa.@querygroup MutableKeysValues begin
+    Salsa.@input function vec_to_int(db, k::Vector{Int}) :: Int end
+end
+
+@testset "mutable keys" begin
+    db = MutableKeysValues()
+    a = [1,2,3]
+    db.vec_to_int[a] = 1
+    @assert db.vec_to_int[a] == 1
+    @assert db.vec_to_int[[1,2,3]] == 1
+
+    # Update `a` outside the db
+    push!(a, 4)
+    @test_throws KeyError db.vec_to_int[a]
+    @test_broken db.vec_to_int[[1,2,3]] == 1   # Something about the equality test being broken
+end
+
+
+# --------------------------------------------------
+# End of tests, start of benchmark
+# --------------------------------------------------
+
 const bench_scale = 100000
 
 @noinline function create_bench_db()
