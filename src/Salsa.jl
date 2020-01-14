@@ -122,8 +122,15 @@ end
 
 function Base.setindex!(input :: WrappedInput{D,K,V}, value, args...) where {D,K,V}
     # TODO (TJG) assert no query active
-    input.db.last_revision += 1
     key = K(args...)
+    # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
+    # to be purely immutable (but not necessarily julia `immutable structs`).
+    if haskey(input.map, key) && isequal(input.map[key].value, value)
+        # Early Exit Optimization Part 1: Don't dirty anything if setting exactly the same
+        # value for an input.
+        return
+    end
+    input.db.last_revision += 1
     input.map[key] = InputValue(value, input.db.last_revision)
 end
 
@@ -333,6 +340,7 @@ end
 function invoke_user_function end
 
 function memoized_lookup(db::QueryGroup, key::DerivedKey)
+    existing_value = nothing
     value = nothing
 
     push_key(db, key)
@@ -359,9 +367,21 @@ function memoized_lookup(db::QueryGroup, key::DerivedKey)
 
     if value === nothing    # N.B., do not use `isnothing`
         v = invoke_user_function(db, key)
-        deps = pop_key(db)
-        value = DerivedValue(v, deps, db.last_revision, db.last_revision)
-        setindex!(db, value, key)
+        # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
+        # to be purely immutable (but not necessarily julia `immutable structs`).
+        if existing_value !== nothing && isequal(existing_value.value, v)
+            # Early Exit Optimization Part 2: If a derived function computes the exact same
+            # value, we can terminate early and "backdate" the changed_at field to say this
+            # value has _not_ changed.
+            existing_value.verified_at = db.last_revision
+            value = existing_value
+            pop_key(db)
+        else
+            # The user function computed a new value, which we must now store.
+            deps = pop_key(db)
+            value = DerivedValue(v, deps, db.last_revision, db.last_revision)
+            setindex!(db, value, key)
+        end
     else
         pop_key(db)
     end

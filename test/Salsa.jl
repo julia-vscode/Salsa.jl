@@ -15,14 +15,17 @@ const Manifest = Vector{String}
 
 "Dummy `Ast` implementation"
 struct Ast
+    left
+    right
+    Ast(l=nothing,r=nothing) = new(l,r)
 end
 
-function extend!(ast::Ast, piece::Ast)
-    ast
+function extend(ast::Ast, piece::Ast)
+    Ast(ast, piece)
 end
 
-function extend!(ast::Ast, source::String)
-    ast
+function extend(ast::Ast, source::String)
+    Ast(ast, source)
 end
 
 @testset "input parsing" begin
@@ -58,19 +61,18 @@ end
 
 Salsa.@query function ast(db::MyQueryGroup, name::String)
     source = db.source_text[name]
-    ast = Ast()
-    extend!(ast, source)
+    ast = Ast(source)
 end
 
 Salsa.@query function whole_program_ast(db::MyQueryGroup)
     result = Ast()
     for filename in db.manifest[]
-        extend!(result, ast(db, filename))
+        result = extend(result, ast(db, filename))
     end
     return result
 end
 
-@testset "Salsa" begin
+@testset "Salsa example" begin
     db = MyQueryGroup()
 
     @test haskey(db.manifest) == false
@@ -97,7 +99,7 @@ end
     @test db.__whole_program_ast_map[WholeProgramAstKey()].changed_at == 3
     @test db.__whole_program_ast_map[WholeProgramAstKey()].verified_at == 3
 
-    db.source_text["a.rs"] = "fn main() { }"
+    db.source_text["a.rs"] = "fn foo() {}"
 
     @test db.__manifest_map[ManifestKey()].changed_at == 1
     @test db.__source_text_map[SourceTextKey("a.rs")].changed_at == 4
@@ -117,6 +119,76 @@ end
     filenames = sort([ name for name = keys(db.source_text) ])
     @test filenames == ["a.rs", "b.rs"]
 end
+
+# ----------------------------------
+
+Salsa.@querygroup EarlyExitOptimizationTest begin
+    Salsa.@input function input(db) :: Int end
+    function ispositive(db, x::Int) :: Bool end
+    function has_positive_input(db) :: Bool end
+    function match_input_sign(db, v::Int) :: Int end
+end
+const ftrace = Set([])
+Salsa.@query function ispositive(db::EarlyExitOptimizationTest, x::Int) :: Bool
+    push!(ftrace, ispositive)
+    x > 0
+end
+Salsa.@query function has_positive_input(db::EarlyExitOptimizationTest) :: Bool
+    push!(ftrace, has_positive_input)
+    ispositive(db, db.input[])
+end
+Salsa.@query function match_input_sign(db::EarlyExitOptimizationTest, v::Int) :: Int
+    push!(ftrace, match_input_sign)
+    abs(v) * (has_positive_input(db) ? 1 : -1)
+end
+
+@testset "Early Exit Optimization Test" begin
+    db = EarlyExitOptimizationTest()
+    db.input[] = -1
+
+    # First call runs all functions
+    empty!(ftrace)
+    @assert match_input_sign(db, 10) == -10
+    @test ftrace == Set([match_input_sign, has_positive_input, ispositive])
+
+    # Second call gets cached values, so only top-level is re-run
+    empty!(ftrace)
+    @assert match_input_sign(db, 5) == -5
+    @test ftrace == Set([match_input_sign])
+
+    # Calling again with the same value re-runs nothing.
+    empty!(ftrace)
+    @assert match_input_sign(db, 5) == -5
+    @test ftrace == Set([])
+
+    # _Setting_ the same value also doesn't dirty anything.
+    db.input[] = -1
+    empty!(ftrace)
+    @assert match_input_sign(db, 5) == -5
+    @test ftrace == Set([])
+
+    # -----
+
+    # If we set the input to a new value with opposite sign, all functions are re-run
+    db.input[] = 1
+    empty!(ftrace)
+    @assert match_input_sign(db, 10) == 10
+    @test ftrace == Set([match_input_sign, has_positive_input, ispositive])
+
+    # -----
+
+    # If we set the input to a new value with the _same_ sign, calling with the same value
+    # stops at has_positive_input, because its return value is the same, and it terminates
+    # early when it sees the same cached result.
+    # Note that we must rerun both `ispositive` and `has_positive_input`, because
+    # `has_positive_input` accesses the `input` _directly_. In this case, we gain almost
+    # nothing from making `ispositive` a derived function, vs a normal julia function.
+    db.input[] = 2
+    empty!(ftrace)
+    @assert match_input_sign(db, 10) == 10
+    @test ftrace == Set([has_positive_input, ispositive])
+end
+
 
 # ----------------------------------
 
