@@ -1,9 +1,112 @@
 module SalsaTest
 
-import Salsa
+using Salsa
+using Salsa: AbstractComponent, InputMap, InputScalar, @component, @input, @connect
 using BenchmarkTools
 using Profile
 using Testy
+
+
+###########################
+# Simple API usage
+
+Salsa.@derived function foofunc(db, x::Int, y::Vector{Int}) :: Int
+    sum([1 + x , y...])
+end
+
+@testset "Simple API Usage" begin
+    @derived function foofunc(db, x::Int, y::Vector{Int}) :: Int
+        sum([1 + x , y...])
+    end
+
+    @derived f2(db::AbstractComponent) = 1
+
+    Salsa.@component C begin end
+
+    c = C()
+    @test f2(c) == 1
+    @test foofunc(c, 1, [1,1]) == 4
+
+    Salsa.@component DefaultConstructorComponent begin
+        Salsa.@input x :: Salsa.InputScalar{Int}
+        DefaultConstructorComponent(r = Salsa.Runtime()) = new(r, InputScalar(r, 100))
+    end
+    @testset "custom constructor with default values" begin
+        c = DefaultConstructorComponent()
+        @test c.x[] == 100
+        c.x[] = 1
+        @test c.x[] == 1
+    end
+end
+
+Salsa.@component Compiler begin
+    Salsa.@input i::Salsa.InputMap{Int,Int}
+end
+Salsa.@component Workspace begin
+    Salsa.@input i2::Salsa.InputScalar{Int}
+    Salsa.@connect compiler::Compiler
+end
+@testset "connected components" begin
+    w = Workspace()
+    w.i2[] = 1
+    w.i2[] = 2
+    @test w.compiler.runtime.current_revision == w.runtime.current_revision == 2
+
+    Salsa.@component TestStorage begin
+        Salsa.@connect workspace::Workspace
+    end
+
+    c = TestStorage()
+
+    i = Salsa.InputMap{Int, Int}(Salsa.Runtime())
+    @test collect(i) == []
+    setindex!(i, 1, 10)
+    @test i[10] == 1
+    @test collect(i) == [10=>1]
+
+    i = Salsa.InputScalar{Int}(Salsa.Runtime())
+    i[] = 1
+    @test i[] == 1
+
+    c = TestStorage()
+
+    count = 0  # For tracking caching
+    Salsa.@derived function foofunc(c::Workspace, x::Int, y::Vector{Int}) :: Int
+        count += 1
+        sum([3 + x , y...])
+    end
+    foofunc(c.workspace, 1, [1,2])  # runs foofunc (and prints)
+    foofunc(c.workspace, 1, [1,2])  # returns cached value
+    foofunc(c.workspace, 3, [1,2])  # runs again
+    @test count == 2
+end
+
+# Multiple methods same function
+@derived f(db::AbstractComponent)::Int = 1
+@derived f(db::AbstractComponent, x)::Int = x
+
+@test f(C()) == 1
+@test f(C(), 20) == 20
+
+
+# ----  Example Usage Tests  ---------------------------------------------------------------
+
+module Workspaces
+using ..Salsa
+Salsa.@component Workspace begin
+    Salsa.@input relnames :: Salsa.InputScalar{Vector{Symbol}}
+    Salsa.@input defs     :: Salsa.InputMap{Symbol, String}
+end
+end  # module Workspaces
+
+@derived function alldefs(w::Workspaces.Workspace)
+    join(w.defs[r] for r in w.relnames[])
+end
+
+w = Workspaces.Workspace()
+w.relnames[] = []
+@show alldefs(w)
+
 
 ############################
 #
@@ -29,42 +132,54 @@ function extend(ast::Ast, source::String)
 end
 
 @testset "input parsing" begin
-    # TODO: This test is broken: we don't support comments in the @querygroup
-    @test_broken @macroexpand Salsa.@querygroup MyQueryGroup begin
-        # Currently can't handle comments inside the block
-        @input function manifest(db) :: Manifest end
-    end isa Expr
+    @test @macroexpand(Salsa.@component MyQueryGroup begin
+        # We can handle comments inside the Query Group just fine
+        @input manifest :: Salsa.InputScalar{Manifest}
+    end) isa Expr
 
     # Test expected parse errors:
 
-    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
+    @test_throws Exception @macroexpand Salsa.@component MyQueryGroup begin
         Salsa.@input "input must be a function"
     end
     # Must be the _actual_ Salsa.@input macro
-    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
-        SomeOtherModule.@input function manifest(db) :: Manifest end
+    @test_throws Exception @macroexpand Salsa.@component MyQueryGroup begin
+        SomeOtherModule.@input manifest :: Salsa.InputScalar{Manifest}
     end
-    # Other arbitrary macros aren't supported
-    @test_throws Exception @macroexpand Salsa.@querygroup MyQueryGroup begin
-        @generated function manifest(db) :: Manifest end
-    end
+
+    # Other arbitrary macros are handled okay (For better or worse)
+    @test @macroexpand(Salsa.@component MyQueryGroup begin
+        Salsa.@input manifest :: Salsa.InputScalar{Manifest}
+
+        @generated f(x) = x
+
+        """ docstrings are technically a macro """
+        MyQueryGroup() = 1
+    end) isa Expr
+
+    # @component and @derived macros support docstrings.
+    @test @macroexpand(begin
+        """ My Component """
+        Salsa.@component MyQueryGroup begin
+            Salsa.@input manifest :: Salsa.InputScalar{Manifest}
+        end
+
+        """ My derived function """
+        Salsa.@derived function foo(db) end
+    end) isa Expr
 end
 
-
-Salsa.@querygroup MyQueryGroup begin
-    Salsa.@input function manifest(db) :: Manifest end
-    Salsa.@input function source_text(db, name::String) :: String end
-
-    function ast(db, name::String) :: Ast end
-    function whole_program_ast(db) :: Ast end
+Salsa.@component MyQueryGroup begin
+    @input manifest    :: Salsa.InputScalar{Manifest}
+    @input source_text :: Salsa.InputMap{String, String}
 end
 
-Salsa.@query function ast(db::MyQueryGroup, name::String)
+Salsa.@derived function ast(db::MyQueryGroup, name::String)
     source = db.source_text[name]
     ast = Ast(source)
 end
 
-Salsa.@query function whole_program_ast(db::MyQueryGroup)
+Salsa.@derived function whole_program_ast(db::MyQueryGroup)
     result = Ast()
     for filename in db.manifest[]
         result = extend(result, ast(db, filename))
@@ -72,72 +187,75 @@ Salsa.@query function whole_program_ast(db::MyQueryGroup)
     return result
 end
 
-@testset "Salsa example" begin
+@testset "Salsa example (from Rust talks)" begin
     db = MyQueryGroup()
 
-    @test haskey(db.manifest) == false
+    @test isassigned(db.manifest) == false
     db.manifest[] = ["a.rs", "b.rs"]
-    @test haskey(db.manifest) == true
+    @test isassigned(db.manifest) == true
 
+    @test length(db.source_text) == 0
     db.source_text["a.rs"] = "fn main() {}"
     db.source_text["b.rs"] = "fn bar();"
     @test haskey(db.source_text, "a.rs") == true
     @test haskey(db.source_text, "b.rs") == true
     @test haskey(db.source_text, "c.rs") == false
 
-    @test db.__manifest_map[ManifestKey()].changed_at == 1
-    @test db.__source_text_map[SourceTextKey("a.rs")].changed_at == 2
-    @test db.__source_text_map[SourceTextKey("b.rs")].changed_at == 3
+    @test db.manifest.v[].changed_at == 1
+    @test db.source_text.v["a.rs"].changed_at == 2
+    @test db.source_text.v["b.rs"].changed_at == 3
 
     whole_program_ast(db)
 
-    @test db.__ast_map[AstKey("a.rs")].changed_at == 3
-    @test db.__ast_map[AstKey("a.rs")].verified_at == 3
-    @test db.__ast_map[AstKey("b.rs")].changed_at == 3
-    @test db.__ast_map[AstKey("b.rs")].verified_at == 3
+    _ast_map = [d for d in values(db.runtime.derived_function_maps) if eltype(keys(d)) == Tuple{String}][1]
+    @test _ast_map[("a.rs",)].changed_at == 3
+    @test _ast_map[("a.rs",)].verified_at == 3
+    @test _ast_map[("b.rs",)].changed_at == 3
+    @test _ast_map[("b.rs",)].verified_at == 3
 
-    @test db.__whole_program_ast_map[WholeProgramAstKey()].changed_at == 3
-    @test db.__whole_program_ast_map[WholeProgramAstKey()].verified_at == 3
+    _whole_program_ast_map = [d for d in values(db.runtime.derived_function_maps) if eltype(keys(d)) == Tuple{}][1]
+    @test _whole_program_ast_map[()].changed_at == 3
+    @test _whole_program_ast_map[()].verified_at == 3
 
     db.source_text["a.rs"] = "fn foo() {}"
 
-    @test db.__manifest_map[ManifestKey()].changed_at == 1
-    @test db.__source_text_map[SourceTextKey("a.rs")].changed_at == 4
-    @test db.__source_text_map[SourceTextKey("b.rs")].changed_at == 3
+    @test db.manifest.v[].changed_at == 1
+    @test db.source_text.v["a.rs"].changed_at == 4
+    @test db.source_text.v["b.rs"].changed_at == 3
 
     whole_program_ast(db)
 
-    @test db.__ast_map[AstKey("a.rs")].changed_at == 4
-    @test db.__ast_map[AstKey("a.rs")].verified_at == 4
-    @test db.__ast_map[AstKey("b.rs")].changed_at == 3
-    @test db.__ast_map[AstKey("b.rs")].verified_at == 4
+    @test _ast_map[("a.rs",)].changed_at == 4
+    @test _ast_map[("a.rs",)].verified_at == 4
+    @test _ast_map[("b.rs",)].changed_at == 3
+    @test _ast_map[("b.rs",)].verified_at == 4
 
-    @test db.__whole_program_ast_map[WholeProgramAstKey()].changed_at == 4
-    @test db.__whole_program_ast_map[WholeProgramAstKey()].verified_at == 4
+    @test _whole_program_ast_map[()].changed_at == 4
+    @test _whole_program_ast_map[()].verified_at == 4
 
     # NOTE: users should not be calling `keys()` in derived queries, since it won't get added to dependency graph.
     filenames = sort([ name for name = keys(db.source_text) ])
     @test filenames == ["a.rs", "b.rs"]
+
+    delete!(db.source_text, "a.rs")
+    @test sort([ name for name = keys(db.source_text) ]) == ["b.rs"]
 end
 
 # ----------------------------------
 
-Salsa.@querygroup EarlyExitOptimizationTest begin
-    Salsa.@input function input(db) :: Int end
-    function ispositive(db, x::Int) :: Bool end
-    function has_positive_input(db) :: Bool end
-    function match_input_sign(db, v::Int) :: Int end
+Salsa.@component EarlyExitOptimizationTest begin
+    Salsa.@input input :: Salsa.InputScalar{Int}
 end
 const ftrace = Set([])
-Salsa.@query function ispositive(db::EarlyExitOptimizationTest, x::Int) :: Bool
+Salsa.@derived function ispositive(db::EarlyExitOptimizationTest, x::Int) :: Bool
     push!(ftrace, ispositive)
     x > 0
 end
-Salsa.@query function has_positive_input(db::EarlyExitOptimizationTest) :: Bool
+Salsa.@derived function has_positive_input(db::EarlyExitOptimizationTest) :: Bool
     push!(ftrace, has_positive_input)
     ispositive(db, db.input[])
 end
-Salsa.@query function match_input_sign(db::EarlyExitOptimizationTest, v::Int) :: Int
+Salsa.@derived function match_input_sign(db::EarlyExitOptimizationTest, v::Int) :: Int
     push!(ftrace, match_input_sign)
     abs(v) * (has_positive_input(db) ? 1 : -1)
 end
@@ -189,18 +307,17 @@ end
     @test ftrace == Set([has_positive_input, ispositive])
 end
 
-
 # ----------------------------------
 
-Salsa.@querygroup ScalarValues begin
-    Salsa.@input function sv(db) :: Int end
-    Salsa.@input function arrayval(db) :: Vector{Int} end
+Salsa.@component ScalarValues begin
+    Salsa.@input sv       :: Salsa.InputScalar{Int}
+    Salsa.@input arrayval :: Salsa.InputScalar{Vector{Int}}
 end
 
 @testset "scalar values in QueryGroup" begin
     @testset "default scalar values?" begin
         # TODO: *is* this broken? Maybe it's intended behavior (i.e. no default values)
-        @test_broken ScalarValues().sv[] == 0
+        #@test_broken ScalarValues().sv[] == 0  # Behavior of uninitialized ints is nondeterministic
         @test_broken ScalarValues().arrayval[] == []
     end
 
@@ -218,11 +335,10 @@ end
 
 # ----------------------------------
 
-Salsa.@querygroup ErrorHandling begin
-    Salsa.@input function v(db) :: Int end
-    function square_root(db) :: Float64 end
+Salsa.@component ErrorHandling begin
+    Salsa.@input v :: Salsa.InputScalar{Int}
 end
-Salsa.@query function square_root(db::ErrorHandling)
+Salsa.@derived function square_root(db::ErrorHandling)
     sqrt(db.v[])
 end
 
@@ -239,36 +355,28 @@ end
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     db.v[] = 1
-    @test_broken square_root(db) == 1  # ERROR: "Cycle in active query"
+    @test square_root(db) == 1  # ERROR: "Cycle in active query"
 end
 
 # ----------------------------------
-Salsa.@querygroup MapAggregatesDB begin
-    Salsa.@input function map(db, k::Int) :: Int end
-
-    function numelts(db) :: Int end
-    function mapkeys(db) :: Vector{Int} end
-    function mapvals(db) :: Vector{Int} end
-    function valsum(db) :: Int end
-    function keysum(db) :: Int end
-
-    # This actually loops over the elements, ∴ _touches_ them.
-    function looped_valsum(db) :: Int end
+Salsa.@component MapAggregatesDB begin
+    Salsa.@input map::Salsa.InputMap{Int, Int}
 end
 
-Salsa.@query function numelts(db::MapAggregatesDB)
+Salsa.@derived function numelts(db::AbstractComponent)
     length(db.map)
 end
 
-Salsa.@query mapvals(db::MapAggregatesDB) = sort(collect(values(db.map)))
-Salsa.@query mapkeys(db::MapAggregatesDB) = sort(collect(keys(db.map)))
-Salsa.@query function valsum(db::MapAggregatesDB)
+Salsa.@derived mapvals(db::AbstractComponent) = sort(collect(values(db.map)))
+Salsa.@derived mapkeys(db::AbstractComponent) = sort(collect(keys(db.map)))
+Salsa.@derived function valsum(db::AbstractComponent)
     sum(values(db.map))
 end
-Salsa.@query function keysum(db::MapAggregatesDB)
+Salsa.@derived function keysum(db::AbstractComponent)
     sum(keys(db.map))
 end
-Salsa.@query function looped_valsum(db::MapAggregatesDB)
+    # This actually loops over the elements, ∴ _touches_ them.
+Salsa.@derived function looped_valsum(db::AbstractComponent)
     out = 0
     for (k,v) in db.map ; out += v ; end
     out
@@ -284,13 +392,11 @@ end
     @testset "keys over a map" begin
         db = MapAggregatesDB()
         db.map[1] = 10
-        # TODO Collect fails on return value of keys():
-        # Cannot `convert` an object of type Int64 to an object of type Main.SalsaTest.MapKey
-        @test_broken sort(collect(keys(db.map))) == [1]
+        @test sort(collect(keys(db.map))) == [1]
 
         # Verify updates
         db.map[2] = 20
-        @test_broken sort(collect(keys(db.map))) == [1,2]
+        @test sort(collect(keys(db.map))) == [1,2]
     end
 
     @testset "vals over a map" begin
@@ -312,8 +418,8 @@ end
     @test numelts(db) == 0
     @test mapvals(db) == []
     @test valsum(db) == 0
-    @test_broken mapkeys(db) == []  # NOTE: keys is broken in general
-    @test_broken keysum(db) == 0  # NOTE: keys is broken in general
+    @test mapkeys(db) == []
+    @test keysum(db) == 0
     # The version that loops over the (k,v) items, and therefore actually touches them.
     @test looped_valsum(db) == 0
 
@@ -335,71 +441,91 @@ end
 # ----------------------------------
 
 # Allow functions with multiple methods
-@test_broken @eval begin
-    Salsa.@querygroup MultiMethodFunctions begin
-        function f(db) :: Any end
-        function f(db, arg::Any) :: Any end
-        function f(db, arg::Int) :: Int end
-    end
-    f(db) = 1
-    f(db, arg::Any) = arg
-    f(db, arg::Int) = arg
+Salsa.@derived f(db::AbstractComponent) = 1
+Salsa.@derived f(db::AbstractComponent, arg::Any) = arg
+Salsa.@derived f(db::AbstractComponent, arg::Int) = 10
+
+Salsa.@component MultiMethodFunctions begin
+end
+@testset "multiple methods" begin
+    @test f(MultiMethodFunctions()) == 1
+    @test f(MultiMethodFunctions(), 2) == 10
+    @test f(MultiMethodFunctions(), "hi") == "hi"
 end
 
 # ----------------------------------
 
-Salsa.@querygroup AbstractTypes begin
+
+Salsa.@component AbstractTypes begin
     # Store abstract types in Input
-    Salsa.@input function in_scalar(db) :: Any end
-    Salsa.@input function in_parametric(db) :: Vector end  # matches any kind of Vector
-    Salsa.@input function in_vec_of_any(db) :: Vector{Any} end  # only matches Vector{Any}
-    Salsa.@input function in_int_vector(db) :: Vector{Int} end  # Should be able to initialize with []
+    Salsa.@input in_scalar     :: Salsa.InputScalar{Any}
+    Salsa.@input in_parametric :: Salsa.InputScalar{Vector}  # matches any kind of Vector
+    Salsa.@input in_vec_of_any :: Salsa.InputScalar{Vector{Any}}  # only matches Vector{Any}
+    Salsa.@input in_int_vector :: Salsa.InputScalar{Vector{Int}}  # Should be able to initialize with []
 
-    # Compute abstract types in derived  queries
-    function derived_scalar(db) :: Any end
-    function derived_parametric(db) :: Vector end  # matches any kind of Vector
-    function derived_vec_of_any(db) :: Vector{Any} end  # Can be constructed from any returned Vector
-
-    # Accept abstract params
-    function derived_scalar_arg(db, arg::Any) :: Any end
-    function derived_parametric_arg(db, arg::Vector) :: Vector end
-    function derived_vec_of_any_arg(db, arg::Vector{Any}) :: Vector{Any} end
+    # Abstract Keys and Values in maps
+    Salsa.@input in_map_scalar     :: Salsa.InputMap{Any, Any}
+    Salsa.@input in_map_parametric :: Salsa.InputMap{Vector, Vector}
+    Salsa.@input in_map_vec_of_any :: Salsa.InputMap{Vector{Any}, Vector{Any}}
+    Salsa.@input in_map_int_vector :: Salsa.InputMap{Vector{Int}, Vector{Int}}
 end
 
-Salsa.@query derived_scalar(db::AbstractTypes) = 1
-Salsa.@query derived_parametric(db::AbstractTypes) = [1,2,3]
-Salsa.@query derived_vec_of_any(db::AbstractTypes) = [1,2,3]  # This will throw an Error
+# Control test case:
+Salsa.@derived fully_typed_scalar(db::AbstractComponent) :: Int = 1
 
-Salsa.@query derived_scalar_arg(db::AbstractTypes, arg::Any) = arg
-Salsa.@query derived_parametric_arg(db::AbstractTypes, arg::Vector) = arg
-Salsa.@query derived_vec_of_any_arg(db::AbstractTypes, arg::Vector{Any}) = arg
+# Compute abstract types in derived  queries
+Salsa.@derived derived_scalar(db::AbstractComponent) :: Any = 1
+Salsa.@derived derived_parametric(db::AbstractComponent) :: Vector = [1,2,3]
+Salsa.@derived derived_vec_of_any(db::AbstractComponent) :: Vector{Any} = [1,2,3]  # This will throw an Error
+
+# Accept abstract params
+Salsa.@derived derived_scalar_arg(db::AbstractComponent, arg::Any) :: Any = arg
+Salsa.@derived derived_parametric_arg(db::AbstractComponent, arg::Vector) :: Vector = arg
+Salsa.@derived derived_vec_of_any_arg(db::AbstractComponent, arg::Vector{Any}) :: Vector{Any} = arg
 
 @testset "Returning AbstractTypes from QueryGroup" begin
     @testset "Assigning subtypes to Abstract Inputs" begin
-        @test_broken AbstractTypes().in_scalar[] = 1  # Assignment of subtype fails
-        @test_broken AbstractTypes().in_parametric[] = [1,2,3]
+        @test (AbstractTypes().in_scalar[] = 1; true)  # Assignment of subtype fails
+        @test (AbstractTypes().in_parametric[] = [1,2,3]; true)
 
         # We should _probably_ be able to construct from a vector of Ints, since normal structs can:
         # ``` module M struct S x::Vector{Any} end end;   M.S([1,2])  # succeeds ```
-        @test_broken AbstractTypes().in_vec_of_any[] = [1,2,3]
+        @test (AbstractTypes().in_vec_of_any[] = [1,2,3]; true)
         @test (AbstractTypes().in_vec_of_any[] = []; true)
 
         # Should be able to construct a Vector{Int} with `[]`
-        @test_broken AbstractTypes().in_int_vector[] = []
+        @test (AbstractTypes().in_int_vector[] = []; true)
+    end
+
+    @testset "Assigning subtypes to Abstract Keys/Values in Inputs" begin
+        @test (AbstractTypes().in_map_scalar[1] = 1; true)  # Assignment of subtype fails
+        @test (AbstractTypes().in_map_parametric[[1,2,3]] = [1,2,3]; true)
+
+        # We should _probably_ be able to construct from a vector of Ints, since normal structs can:
+        # ``` module M struct S x::Vector{Any} end end;   M.S([1,2])  # succeeds ```
+        @test (AbstractTypes().in_map_vec_of_any[[1,2,3]] = [1,2,3]; true)
+        @test (AbstractTypes().in_map_vec_of_any[[]] = []; true)
+
+        # Should be able to construct a Vector{Int} with `[]`
+        @test (AbstractTypes().in_map_int_vector[[]] = []; true)
+    end
+
+    @testset "Baseline: Can @infer fully typed functions" begin
+        @test @inferred(fully_typed_scalar(AbstractTypes())) == 1  # Returning subtype
     end
 
     @testset "Returning subtypes from derived functions" begin
         # NOTE that you cannot infer the results of these functions, because the map holds
         # an abstract type for the return value.
-        @test_broken derived_scalar(AbstractTypes()) == 1  # Returning subtype
-        @test_broken derived_parametric(AbstractTypes()) == [1,2,3]  # Returning subtype
+        @test derived_scalar(AbstractTypes()) == 1  # Returning subtype
+        @test derived_parametric(AbstractTypes()) == [1,2,3]  # Returning subtype
 
-        @test_broken derived_vec_of_any(AbstractTypes()) == Any[1,2,3]  # Return value is `convert`able to Vecotr{Any}
+        @test derived_vec_of_any(AbstractTypes()) == Any[1,2,3]  # Return value is `convert`able to Vector{Any}
     end
 
     @testset "Functions accept subtypes of Argument specifiers" begin
-        @test_broken derived_scalar_arg(AbstractTypes(), 1) == 1  # Pass subtype
-        @test_broken derived_parametric_arg(AbstractTypes(), [1,2,3]) == [1,2,3]  # Pass subtype
+        @test derived_scalar_arg(AbstractTypes(), 1) == 1  # Pass subtype
+        @test derived_parametric_arg(AbstractTypes(), [1,2,3]) == [1,2,3]  # Pass subtype
 
         @test_throws MethodError derived_vec_of_any_arg(AbstractTypes(), [1,2,3])  # Can't pass Vector{Int} to Vector{Any}
         @test derived_vec_of_any_arg(AbstractTypes(), Any[1,2,3]) == Any[1,2,3]  # Return value is `convert`able to Vecotr{Any}
@@ -408,36 +534,8 @@ end
 
 # ------------------------------------------
 
-@testset "bad input" begin
-    # This shouldn't parse, but it does, because apparently `struct S Vector{Int} end` is
-    # valid Julia, and it just ignores the weird type in there....
-    # We should probably catch this because it's easy to accidentally write this (i've
-    # done it already).
-    @test_broken begin
-        # TODO: This should throw an exception: @test_throws Exception
-        @eval Salsa.@querygroup Test begin
-            Salsa.@input function arraymap(db, Vector{Int}) :: Int end
-        end
-        # Evalutate to false to represent the "brokenness", because can't compose
-        # `@test_broken` and `@test_throws`.
-        false
-    end
-end
-@testset "weird inputs" begin
-    # But we _should_ probably be able to accept this one; why does the user need to name
-    # the keys in the input function?
-    @test_broken @eval begin
-        Salsa.@querygroup Test begin
-            Salsa.@input function arraymap(db, ::Vector{Int}) :: Int end
-        end
-        true
-    end
-end
-
-# -------------------------------------------
-
-Salsa.@querygroup MutableKeysValues begin
-    Salsa.@input function vec_to_int(db, k::Vector{Int}) :: Int end
+Salsa.@component MutableKeysValues begin
+    Salsa.@input vec_to_int :: Salsa.InputMap{Vector{Int}, Int}
 end
 
 @testset "mutable keys" begin
@@ -453,20 +551,88 @@ end
     @test_broken db.vec_to_int[[1,2,3]] == 1   # Something about the equality test being broken
 end
 
+# --- Composed Component -------------------------------------
+
+@component A begin
+    @input x :: InputMap{Int,Int}
+end
+@component B begin
+    @connect a :: A
+end
+@derived function b_a_x(b::B, k::Int)
+    b.a.x[k]
+end
+@testset "composed component" begin
+    b = B()
+    b.a.x[1] = 10
+    @test b_a_x(b, 1) == 10
+end
+
+# --- Abstract Component connection (circular dependency) ----------
+
+module ExampleDatabaseModule
+using ..Salsa
+using ..Salsa: @connect
+using Testy
+# Defined before the Workspace
+@component Compiler begin
+    @input relation_defs :: InputMap{Int, String}
+end
+# `db` is expected to be Component that contains the Workspace (defined later to resolve
+# circular dependency), and implements `get_workspace(db) :: Workspace`.
+@derived function compile_relation(db::AbstractComponent, relid::Int) :: Int
+    # Get the relation arity from the Workspace, which is defined after this Component.
+    arity = get_workspace(db).relation_arity[relid]
+    # ... for this example, just return the arity ...
+    arity
+end
+@component Workspace begin
+    @input relation_arity :: InputMap{Int, Int}
+
+    @connect compiler :: Compiler
+end
+@component DatabaseStorage begin
+    @connect workspace :: Workspace
+end
+function get_workspace(db::DatabaseStorage)
+    db.workspace
+end
+@testset "composed component" begin
+    db = DatabaseStorage()
+    db.workspace.relation_arity[1] = 3
+    @test compile_relation(db, 1) == 3
+end
+end
+
+# --- Composed Component -------------------------------------
+
+@component A begin
+    @input x :: InputMap{Int,Int}
+end
+@component B begin
+    @connect a :: A
+end
+@testset "composed component" begin
+    b = B()
+    b.a.x[1] = 10
+    @test b.a.x[1] == 10
+end
+
+
 
 # --------------------------------------------------
 # End of tests, start of benchmark
 # --------------------------------------------------
 
-const bench_scale = 100000
+const bench_scale = 10000
 
 @noinline function create_bench_db()
     db = MyQueryGroup()
 
     man = ["$i" for i in 1:bench_scale]
-    set_manifest(db, man)
+    db.manifest[] = man
     for i in 1:bench_scale
-        set_source_text(db, "$i", "program $i {}")
+        setindex!(db.source_text, "program $i {}", "$i")
     end
 
     return db
@@ -475,8 +641,8 @@ end
 @noinline function incr_bench_db()
     db = create_bench_db()
     whole_program_ast(db)
-    set_source_text(db, "1", "program 1 { }")
-    set_source_text(db, "$bench_scale", "program $bench_scale { }")
+    setindex!(db.source_text, "program 1 { }", "1")
+    setindex!(db.source_text, "program $bench_scale { }", "$bench_scale")
 
     return db
 end
@@ -491,14 +657,41 @@ function incr_bench()
     return run(b)
 end
 
-function profile_run()
+function profile_run(n=10)
     Profile.clear()
-    Profile.init(n=10^7, delay=0.05)
-    @profile for i in 1:10
+    Profile.init(n=10^7)
+    @profile for i in 1:n
         db = incr_bench_db()
         whole_program_ast(db)
     end
-    statprofilehtml()
+end
+
+# ----------------------------------------------------------------------------
+# Note: uncomment the lines below to profile the small Salsa benchmark
+# ----------------------------------------------------------------------------
+
+#profile_run(1)  # warmup
+#@time profile_run()
+#using PProf
+#pprof(out="branch", from_c=false)
+
+module M
+using ..Salsa
+@component Classroom begin
+    @input student_grades :: InputMap{String, Float64}
+end
+@derived function letter_grade(c, name)
+    println("computing grade for $name")
+    ["D","C","B","A"][Int(round(c.student_grades[name]))]
+end
+c = Classroom()
+c.student_grades["John"] = 3.25
+letter_grade(c, "John")  # "B"; prints "computing grade for John"
+letter_grade(c, "John")  # "B"; no output (uses cached value)
+c.student_grades["John"] = 3.8
+letter_grade(c, "John")  # "A"; prints "computing grade for John"
+
+
 end
 
 end
