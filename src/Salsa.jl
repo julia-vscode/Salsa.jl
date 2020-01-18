@@ -94,7 +94,7 @@ struct DerivedKey{Func} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
     # e.g. InputKey{InputMap{Int,Int}}(@0x00000001117b5780)
-    print(io, "InputKey{$T}(@$(repr(UInt(pointer_from_objref(key.map)))))")
+    print(io, "InputKey{$T}(@$(repr(UInt(pointer_from_objref(key.map.v)))))")
 end
 
 
