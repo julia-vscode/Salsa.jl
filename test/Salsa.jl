@@ -50,6 +50,7 @@ end
     w = Workspace()
     w.i2[] = 1
     w.i2[] = 2
+    @test w.i2[] == 2
     @test w.compiler.runtime.current_revision == w.runtime.current_revision == 2
 
     Salsa.@component TestStorage begin
@@ -81,12 +82,14 @@ end
     @test count == 2
 end
 
-# Multiple methods same function
-@derived f(db::AbstractComponent)::Int = 1
-@derived f(db::AbstractComponent, x)::Int = x
+@testset "Multiple methods same function" begin
+    @derived f(db::AbstractComponent)::Int = 1
+    @derived f(db::AbstractComponent, x)::Int = x
 
-@test f(C()) == 1
-@test f(C(), 20) == 20
+    @component C1 begin end
+    @test f(C1()) == 1
+    @test f(C1(), 20) == 20
+end
 
 
 # ----  Example Usage Tests  ---------------------------------------------------------------
