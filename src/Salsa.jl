@@ -26,12 +26,14 @@ import MacroTools
 const Revision = Int
 
 struct InputValue{T}
-    value :: T
-    changed_at :: Revision
+    value::T
+    changed_at::Revision
     # Allow converting from abitrary values (e.g. creating a Vector{String} from []).
     InputValue{T}(v, changed_at) where T = new{T}(v, changed_at)
 end
 InputValue(v::T, changed_at) where T = InputValue{T}(v,changed_at)
+
+_changed_at(v::InputValue)::Revision = v.changed_at
 
 # We use Tuples to store the arguments to a Salsa call (both for input maps and derived
 # function calls). These Tuples are used as the keys for the maps that implement the caches
@@ -51,14 +53,16 @@ abstract type AbstractKey end
 const DependencyKey = Tuple{AbstractKey, Vararg{Any}}
 
 mutable struct DerivedValue{T}
-    value :: T
+    value::T
     # A list of all the computations that were accessed when computing this value
-    dependencies :: Vector{DependencyKey}
+    dependencies::Vector{DependencyKey}
     # These Revisions are used to determine whether we need to re-compute this value or not.
     # We need both of them in order to correctly implement the Early-Exit Optimization.
-    changed_at :: Revision
-    verified_at :: Revision
+    changed_at::Revision
+    verified_at::Revision
 end
+
+_changed_at(v::DerivedValue)::Revision where T = v.changed_at
 
 """
     abstract type AbstractComponent
@@ -140,7 +144,7 @@ function pop_key(db::Runtime)
 end
 
 function key_changed_at(component, map::Dict{<:Any, <:DerivedValue}, key::DependencyKey)
-    memoized_lookup_derived(component, key).changed_at
+    _changed_at(memoized_lookup_derived(component, key))
 end
 
 function invoke_user_function end
@@ -176,7 +180,6 @@ function memoized_lookup_derived(component, key::DependencyKey)
             end
         end
     end
-
 
     if value === nothing    # N.B., do not use `isnothing`
         v = try
@@ -222,7 +225,7 @@ end
 # ---------------
 
 """
-    @derived function foofunc(component, x::Int, y::Vector{Int}) :: Int ... end
+    @derived function foofunc(component, x::Int, y::Vector{Int}) ::Int ... end
 
 This macro is used to mark a julia function as a Salsa Derived Function, which means the
 Salsa framework will cache its return value, keyed on its inputs.
@@ -247,7 +250,7 @@ the dependency chain.)
 # Example
 ```julia-repl
 julia> @component Classroom begin
-           @input student_grades :: InputMap{String, Float64}
+           @input student_grades::InputMap{String, Float64}
        end
 
 julia> @derived function letter_grade(c, name)
@@ -329,7 +332,7 @@ macro derived(f)
         # Attach any docstring before this macrocall to the "visible" function.
         Core.@__doc__ $visible_func
 
-        function $Salsa.get_map_for_key(runtime :: $Runtime, derived_key :: $derived_key_t)
+        function $Salsa.get_map_for_key(runtime::$Runtime, derived_key::$derived_key_t)
             # NOTE: This implements the dynamic behavior for Salsa Components, allowing
             # users to define derived function methods after the Component, by attaching
             # them to the struct at runtime.
@@ -374,9 +377,9 @@ through to all the Inputs and any embeded Components.
 # Example
 ```julia
 Salsa.@component MyComponent begin
-    Salsa.@input input_field :: Salsa.InputMap{Int, Int}
+    Salsa.@input input_field::Salsa.InputMap{Int, Int}
 
-    Salsa.@connect another_component :: AnotherComponent
+    Salsa.@connect another_component::AnotherComponent
 end
 ```
 
@@ -397,7 +400,7 @@ You can pass an instance of a Component struct as the first argument to  "[`@der
 functions," which access input fields from this struct and calculate derived values, and
 store their state in the runtime of the component. For example:
 ```julia
-@derived function foo(my_component, arg1::Int) :: Int
+@derived function foo(my_component, arg1::Int) ::Int
     my_component.input_field[arg1]
 end
 ```
@@ -450,7 +453,7 @@ macro component(name, def)
             :(
             # Define the default constructor only if the user hasn't provided a constructor
             # of their own. (The user's constructor must provide `runtime` to all args.)
-            function $name(runtime :: $Runtime = $Runtime())
+            function $name(runtime::$Runtime = $Runtime())
                 $Salsa.create($name, runtime)
             end
             )
@@ -470,17 +473,22 @@ function create end
 
 # --- Inputs --------------------------
 
+OptionInputValue{V} = Union{Nothing, Some{InputValue{V}}}
+
 struct InputScalar{V}
     # TODO: Consider @tjgreen's original `getproperty` optimization to not need to store runtime
     # in every field. We would have to construct a "WrappedInputScalar" in getproperty.
     runtime::Runtime
-    v::Base.RefValue{InputValue{V}}
+    v::Base.RefValue{OptionInputValue{V}}
     # Must provide a runtime. Providing a default value for v is optional
-    InputScalar{V}(runtime::Runtime) where V = new{V}(runtime, Ref{InputValue{V}}())
-    InputScalar{V}(runtime::Runtime, v) where V = new{V}(runtime, Ref{InputValue{V}}(InputValue{V}(v, 0)))
+    InputScalar{V}(runtime::Runtime) where V =
+        new{V}(runtime, Ref{OptionInputValue{V}}(nothing))
+    InputScalar{V}(runtime::Runtime, v) where V =
+        new{V}(runtime, Ref{OptionInputValue{V}}(Some(InputValue{V}(v, 0))))
     # No type constructs InputScalar{Any}, which can be converted to the correct type.
     InputScalar(r::Runtime, v) = InputScalar{Any}(r, v)
 end
+
 struct InputMap{K,V} <: AbstractDict{K,V}
     runtime::Runtime
     v::Dict{K,InputValue{V}}
@@ -501,13 +509,14 @@ InputMap(runtime) = InputMap{Any,Any}(runtime)
 
 Base.convert(::Type{T}, i::InputScalar) where T<:InputScalar = i isa T ? i : T(i)
 function InputScalar{T}(i::InputScalar{S}) where {S,T}
-    @assert !isassigned(i) || i.v[].changed_at == 0  "Cannot copy an InputScalar{$T} " *
+    @assert !isassigned(i) || _changed_at(something(i.v[])) == 0 "Cannot copy an InputScalar{$T} " *
         "from another, active InputScalar{$S}. Conversion only supported for construction."
     InputScalar{T}(i.runtime, i[])
 end
+
 Base.convert(::Type{T}, i::InputMap) where T<:InputMap = i isa T ? i : T(i)
 function InputMap{K1,V1}(i::InputMap{K2,V2}) where {K1,V1,K2,V2}
-    @assert isempty(i) || all(v.changed_at == 0 for v in values(i.v)) "Cannot copy an InputMap{$K1,$V1} " *
+    @assert isempty(i) || all(_changed_at(v) == 0 for v in values(i.v)) "Cannot copy an InputMap{$K1,$V1} " *
         "from another, active InputMap{$K2,$V2}. Conversion only supported for construction."
     InputMap{K1,V1}(i.runtime, Dict(pairs(i)...))
 end
@@ -521,9 +530,9 @@ end
 # possible now because there is a pointer to the DB in the inputs themselves.
 # For examples of this failure currently, please see these broken tests:
 # <broken-url>
-Base.length(input  :: InputTypes) = Base.length(input.v)
-Base.iterate(input :: InputTypes) = unpack_next(Base.iterate(input.v))
-Base.iterate(input :: InputTypes, state) = unpack_next(Base.iterate(input.v, state))
+Base.length(input::InputTypes) = Base.length(input.v)
+Base.iterate(input::InputTypes) = unpack_next(Base.iterate(input.v))
+Base.iterate(input::InputTypes, state) = unpack_next(Base.iterate(input.v, state))
 
 function unpack_next(next)
     if next === nothing
@@ -542,32 +551,37 @@ Base.eltype(::Type{InputMap{K,V}}) where {K,V} = Base.Pair{K,V}
 
 # Copied from Base, i[k1,k2,ks...] is syntactic sugar for i[(k1,k2,ks...)]
 # Note that this overload means _at least two_ keys.
-Base.getindex(i::InputTypes, k1, k2, ks...)    = Base.getindex(i, tuple(k1,k2,ks...))
+Base.getindex(i::InputTypes, k1, k2, ks...) = Base.getindex(i, tuple(k1,k2,ks...))
 Base.setindex!(i::InputTypes, v, k1, k2, ks...) = Base.setindex!(i, v, tuple(k1,k2,ks...))
 
 # Access scalar inputs like a Reference: `input[]`
-function Base.getindex(input :: InputScalar)
+function Base.getindex(input::InputScalar)
     memoized_lookup_input(input.runtime, input, (InputKey(input),)).value
 end
+
 # Access map inputs like a Dict: `input[k1, k2]`
-function Base.getindex(input :: InputMap, call_args...)
+function Base.getindex(input::InputMap, call_args...)
     memoized_lookup_input(input.runtime, input, (InputKey(input), call_args...)).value
 end
 
-function Base.setindex!(input :: InputScalar{T}, value) where {T}
+# The argument `value` can be anything that can be converted to type `T`. We omit the
+# explicit type `value::T` because that would preclude a `value::S` where `S` can be
+# converted to a `T`.
+function Base.setindex!(input::InputScalar{T}, value) where {T}
     # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
     # to be purely immutable (but not necessarily julia `immutable structs`).
-    if isassigned(input.v) && isequal(input.v[].value, value)
+    if isassigned(input) && isequal(something(input.v[]).value, value)
         # Early Exit Optimization Part 1: Don't dirty anything if setting exactly the same
         # value for an input.
         return
     end
     # TODO (TJG) assert no query active
     input.runtime.current_revision += 1
-    input.v[] = InputValue{T}(value, input.runtime.current_revision)
+    input.v[] = Some(InputValue{T}(value, input.runtime.current_revision))
     input
 end
-function Base.setindex!(input :: InputMap{K,V}, value, key) where {K,V}
+
+function Base.setindex!(input::InputMap{K,V}, value, key) where {K,V}
     # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
     # to be purely immutable (but not necessarily julia `immutable structs`).
     if haskey(input.v, key) && isequal(input.v[key].value, value)
@@ -581,7 +595,7 @@ function Base.setindex!(input :: InputMap{K,V}, value, key) where {K,V}
     input
 end
 
-function Base.delete!(input :: InputMap, key)
+function Base.delete!(input::InputMap, key)
     # TODO (TJG) assert no query active
     input.runtime.current_revision += 1
     delete!(input.v, key)
@@ -592,18 +606,19 @@ end
 # functions need to become either disallowed from within derived functions, or become
 # implemented as memoized_lookups as well, since they are stateful.
 # This should be relatively easy!
-function Base.isassigned(input :: InputScalar)
-    isassigned(input.v)
+function Base.isassigned(input::InputScalar)
+    !(input.v[] isa Nothing)
 end
-function Base.haskey(input :: InputMap, key)
+function Base.haskey(input::InputMap, key)
     # TODO (TJG) assert no query active
     return haskey(input.v, key)
 end
 
-function key_changed_at(component, map::InputTypes, key::DependencyKey)
-    memoized_lookup_input(component.runtime, map, key).changed_at
+function key_changed_at(component, map::InputTypes, key::DependencyKey)::Revision
+    _changed_at(memoized_lookup_input(component.runtime, map, key))
 end
-function memoized_lookup_input(runtime::Runtime, input::InputTypes, key::DependencyKey)
+
+function memoized_lookup_input_helper(runtime::Runtime, input::InputTypes, key::DependencyKey)
     typedkey, call_args = key[1], key[2:end]
     push_key(runtime, key)
     value = getindex(input.v, call_args...)
@@ -611,10 +626,26 @@ function memoized_lookup_input(runtime::Runtime, input::InputTypes, key::Depende
     return value
 end
 
+function memoized_lookup_input(runtime::Runtime,
+                               input::InputScalar{V},
+                               key::DependencyKey)::InputValue{V} where V
+    option = memoized_lookup_input_helper(runtime, input, key)
+    if option isa Nothing
+        # Reading an unitialized Ref.
+        throw(UndefRefError())
+    else
+        option.value
+    end
+end
+
+function memoized_lookup_input(runtime::Runtime, input::InputMap, key::DependencyKey)
+    memoized_lookup_input_helper(runtime, input, key)
+end
+
 
 # These macros are needed to craft a @component constructor that constructs all its elements.
 """
-    @input fieldname :: InputType{KeyType, ValueType}
+    @input fieldname::InputType{KeyType, ValueType}
 
 Used within a Salsa Component definition to declare a value as an Input to Salsa.
 This macro should be used inside of a [`@component`](@ref), since it is simply used as part
@@ -625,8 +656,8 @@ to each of the inputs.)
 # Example
 ```julia
     Salsa.@component MyComponent begin
-        Salsa.@input debug :: Salsa.InputScalar{Bool}
-        Salsa.@input source_files :: Salsa.InputMap{String, String}
+        Salsa.@input debug::Salsa.InputScalar{Bool}
+        Salsa.@input source_files::Salsa.InputMap{String, String}
     end
 ```
 """
@@ -641,7 +672,7 @@ macro input(decl)
     )
 end
 """
-    @connect fieldname :: AnotherComponentType
+    @connect fieldname::AnotherComponentType
 
 Used within a Salsa Component definition to declare a value to be an embedded Salsa
 Component. This macro should be used inside of a [`@component`](@ref), since it is simply
@@ -652,14 +683,14 @@ provided Runtime through to the Component's constructor.)
 # Example
 ```julia
     Salsa.@component MyComponent begin
-        Salsa.@connect compiler :: Compiler
+        Salsa.@connect compiler::Compiler
     end
 ```
 """
 macro connect(decl)
     componentname = decl.args[1]
     componenttype = Core.eval(__module__, decl.args[2])
-    @assert componenttype <: AbstractComponent "Expected usage: `@connect compiler :: CompilerComponent`, where CompilerComponent was created via `@component`"
+    @assert componenttype <: AbstractComponent "Expected usage: `@connect compiler::CompilerComponent`, where CompilerComponent was created via `@component`"
     ProvideDecl(
         componentname,
         componenttype,

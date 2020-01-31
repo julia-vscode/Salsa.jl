@@ -204,7 +204,8 @@ end
     @test haskey(db.source_text, "b.rs") == true
     @test haskey(db.source_text, "c.rs") == false
 
-    @test db.manifest.v[].changed_at == 1
+    @test db.manifest.v[] isa Some
+    @test db.manifest.v[].value.changed_at == 1
     @test db.source_text.v["a.rs"].changed_at == 2
     @test db.source_text.v["b.rs"].changed_at == 3
 
@@ -222,7 +223,8 @@ end
 
     db.source_text["a.rs"] = "fn foo() {}"
 
-    @test db.manifest.v[].changed_at == 1
+    @test db.manifest.v[] isa Some
+    @test db.manifest.v[].value.changed_at == 1
     @test db.source_text.v["a.rs"].changed_at == 4
     @test db.source_text.v["b.rs"].changed_at == 3
 
@@ -319,9 +321,9 @@ end
 
 @testset "scalar values in QueryGroup" begin
     @testset "default scalar values?" begin
-        # TODO: *is* this broken? Maybe it's intended behavior (i.e. no default values)
-        #@test_broken ScalarValues().sv[] == 0  # Behavior of uninitialized ints is nondeterministic
-        @test_broken ScalarValues().arrayval[] == []
+        # Reading an uninitialized InputScalar fails.
+        @test_throws UndefRefError ScalarValues().sv[]
+        @test_throws UndefRefError ScalarValues().arrayval[]
     end
 
     db = ScalarValues()
