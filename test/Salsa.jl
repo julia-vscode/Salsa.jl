@@ -419,28 +419,26 @@ end
 @testset "Map Inputs Aggregates" begin
     db = MapAggregatesDB()
 
-    # Can call derived query without initializing the field
-    @test numelts(db) == 0
-    @test mapvals(db) == []
-    @test valsum(db) == 0
-    @test mapkeys(db) == []
-    @test keysum(db) == 0
+    # From within a derived function, calling anything but getindex fails:
+    
+    # Reflection functions throw an error on an empty map.
+    @test_throws ErrorException numelts(db)
+    @test_throws ErrorException mapvals(db)
+    @test_throws ErrorException valsum(db)
+    @test_throws ErrorException mapkeys(db)
+    @test_throws ErrorException keysum(db)
     # The version that loops over the (k,v) items, and therefore actually touches them.
-    @test looped_valsum(db) == 0
+    @test_throws ErrorException looped_valsum(db)
 
-    # If you update the values, the derived queries update.
-    # NOTE: These are broken because currently _aggregate_ operations aren't dirtying the
-    # Map's changed-at value
+    # If you update the values, calling anything but getindex still fails.
     db.map[1] = 10
     db.map[2] = 20
-    @test_broken numelts(db) == 2
-    @test_broken mapvals(db) == [10,20]
-    @test_broken valsum(db) == 30
-    @test_broken mapkeys(db) == [1,2]  # NOTE: keys is broken in general
-    @test_broken keysum(db) == 3  # NOTE: keys is broken in general
-    # NOTE: Surprisingly, even this isn't updated, which surprises me since it's similar
-    # to the above `whole_program_ast` example.
-    @test_broken looped_valsum(db) == 30
+    @test_throws ErrorException numelts(db)
+    @test_throws ErrorException mapvals(db)
+    @test_throws ErrorException valsum(db)
+    @test_throws ErrorException mapkeys(db)
+    @test_throws ErrorException keysum(db)
+    @test_throws ErrorException looped_valsum(db)
 end
 
 # ----------------------------------

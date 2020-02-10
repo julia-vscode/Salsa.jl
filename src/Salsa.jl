@@ -106,6 +106,7 @@ end
 
 const DerivedFunctionMapType = IdDict{DerivedKey, Dict}
 mutable struct Runtime
+    # TODO deprecate the "active query" terminology for "derived function"
     current_revision::Int64
     active_query::Vector{DependencyKey}
     active_traces::Vector{Vector{DependencyKey}}
@@ -115,6 +116,10 @@ mutable struct Runtime
     Runtime() = new(0, [], [], DerivedFunctionMapType())
 end
 
+function is_in_derived(runtime::Runtime)
+    !isempty(runtime.active_query) ||
+        !isempty(runtime.active_traces)
+end
 
 function push_key(db::Runtime, dbkey)
     # Handle special case of first `push_key`
@@ -122,7 +127,7 @@ function push_key(db::Runtime, dbkey)
         push!(db.active_traces, Vector{DependencyKey}())
     elseif in(dbkey, db.active_query)
 
-        error("Cycle in active query invoking $dbkey: $(db.active_query)")
+        error("Cycle in derived function invoking $dbkey: $(db.active_query)")
     end
 
     push!(db.active_query, dbkey)
@@ -503,6 +508,17 @@ end
 const input_types = (InputScalar, InputMap)
 const InputTypes = Union{input_types...}
 
+function is_in_derived(input::InputTypes)
+    is_in_derived(input.runtime)
+end
+
+function assert_safe(input::InputTypes)
+    if is_in_derived(input)
+        active_query = input.runtime.active_query
+        error("Attempted impure operation in a derived function: $(active_query)")
+    end
+end
+
 # Support Constructing an Input from an untyped constructor `InputScalar(db)`.
 InputScalar(runtime) = InputScalar{Any}(runtime)
 InputMap(runtime) = InputMap{Any,Any}(runtime)
@@ -510,29 +526,38 @@ InputMap(runtime) = InputMap{Any,Any}(runtime)
 Base.convert(::Type{T}, i::InputScalar) where T<:InputScalar = i isa T ? i : T(i)
 function InputScalar{T}(i::InputScalar{S}) where {S,T}
     @assert !isassigned(i) || _changed_at(something(i.v[])) == 0 "Cannot copy an InputScalar{$T} " *
-        "from another, active InputScalar{$S}. Conversion only supported for construction."
+        "from another in-use InputScalar{$S}. Conversion only supported for construction."
     InputScalar{T}(i.runtime, i[])
 end
 
 Base.convert(::Type{T}, i::InputMap) where T<:InputMap = i isa T ? i : T(i)
 function InputMap{K1,V1}(i::InputMap{K2,V2}) where {K1,V1,K2,V2}
     @assert isempty(i) || all(_changed_at(v) == 0 for v in values(i.v)) "Cannot copy an InputMap{$K1,$V1} " *
-        "from another, active InputMap{$K2,$V2}. Conversion only supported for construction."
+        "from another in-use InputMap{$K2,$V2}. Conversion only supported for construction."
     InputMap{K1,V1}(i.runtime, Dict(pairs(i)...))
 end
 
-# TODO: Either fix, or disallow, calling these "reflection functions" from within a derived
+# TODO: Fix calling these "reflection functions" from within a derived
 # function (e.g. length, iterate, keys, values, etc). Currently, this kind of reflection
-# over the inputs maps is bad, because it doesn't register a dependency on the values stored
+# over the inputs maps is not allowed, because it doesn't register a dependency on the values stored
 # in the map, so it is effectively depending on outside global state.
 # Consider whether these could be fixed by making them derived functions themselves, and
 # registering their values in some sort of "reflection" map storing "meta" keys. This is
 # possible now because there is a pointer to the DB in the inputs themselves.
 # For examples of this failure currently, please see these broken tests:
 # <broken-url>
-Base.length(input::InputTypes) = Base.length(input.v)
-Base.iterate(input::InputTypes) = unpack_next(Base.iterate(input.v))
-Base.iterate(input::InputTypes, state) = unpack_next(Base.iterate(input.v, state))
+function Base.length(input::InputTypes)
+    assert_safe(input)
+    Base.length(input.v)
+end
+function Base.iterate(input::InputTypes)
+    assert_safe(input)
+    unpack_next(Base.iterate(input.v))
+end
+function Base.iterate(input::InputTypes, state)
+    assert_safe(input)
+    unpack_next(Base.iterate(input.v, state))
+end
 
 function unpack_next(next)
     if next === nothing
@@ -575,7 +600,7 @@ function Base.setindex!(input::InputScalar{T}, value) where {T}
         # value for an input.
         return
     end
-    # TODO (TJG) assert no query active
+    assert_safe(input)
     input.runtime.current_revision += 1
     input.v[] = Some(InputValue{T}(value, input.runtime.current_revision))
     input
@@ -589,29 +614,30 @@ function Base.setindex!(input::InputMap{K,V}, value, key) where {K,V}
         # value for an input.
         return
     end
-    # TODO (TJG) assert no query active
+    assert_safe(input)
     input.runtime.current_revision += 1
     input.v[key] = InputValue{V}(value, input.runtime.current_revision)
     input
 end
 
 function Base.delete!(input::InputMap, key)
-    # TODO (TJG) assert no query active
+    assert_safe(input)
     input.runtime.current_revision += 1
     delete!(input.v, key)
     input
 end
 
 # TODO: As with the reflection functions above (length, iterate, etc), these accessor
-# functions need to become either disallowed from within derived functions, or become
-# implemented as memoized_lookups as well, since they are stateful.
+# functions are disallowed from within derived functions. They could become implemented as
+# memoized_lookups as well, since they are stateful.
 # This should be relatively easy!
 function Base.isassigned(input::InputScalar)
-    !(input.v[] isa Nothing)
+    assert_safe(input)
+    isassigned(input.v) && !(input.v[] isa Nothing)
 end
 function Base.haskey(input::InputMap, key)
-    # TODO (TJG) assert no query active
-    return haskey(input.v, key)
+    assert_safe(input)
+    haskey(input.v, key)
 end
 
 function key_changed_at(component, map::InputTypes, key::DependencyKey)::Revision
