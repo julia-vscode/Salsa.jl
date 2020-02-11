@@ -626,6 +626,11 @@ function Base.delete!(input::InputMap, key)
     delete!(input.v, key)
     input
 end
+function Base.empty!(input :: InputMap)
+    input.runtime.current_revision += 1
+    empty!(input.v)
+    input
+end
 
 # TODO: As with the reflection functions above (length, iterate, etc), these accessor
 # functions are disallowed from within derived functions. They could become implemented as
