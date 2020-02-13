@@ -44,12 +44,12 @@ const CallArgs = Tuple  # (Unused, but defined here for clarity. Could be used i
 # identifies requests for the cached value (ie accessing inputs or calling derived
 # functions). Instances of these key types are used to identify _which maps_ the remaining
 # arguments (as a CallArgs tuple) are the key to.
-# e.g. foo(component, 2,3,5) -> DerivedKey{Symbol("Foo(Int,Int,Int)")}()
+# e.g. foo(component, 2,3,5) -> DerivedKey{Foo, (Int,Int,Int)}()
 abstract type AbstractKey end
 # To specify dependencies between Salsa computations, we use a tuple whose first element is a
 # key instance that specifies a call (above) and remaining elements are the arguments to
 # that call.
-# e.g. foo(component, 2,3,5) -> (DerivedKey{Symbol("Foo(Int,Int,Int)")}(), 2,3,5)
+# e.g. foo(component, 2,3,5) -> (DerivedKey{Foo, (Int,Int,Int)}(), 2,3,5)
 const DependencyKey = Tuple{AbstractKey, Vararg{Any}}
 
 mutable struct DerivedValue{T}
@@ -94,11 +94,26 @@ abstract type AbstractComponent end
 struct InputKey{T} <: AbstractKey
     map::T  # Index input keys by the _instance_ of the map itself.
 end
-struct DerivedKey{Func} <: AbstractKey end
+# A DerivedKey{F, TT} is stored in the dependencies of a Salsa derived function, in order to
+# represent a call to another derived function. (e.g. For `@derived foo(::Int,::Int)`, we'd
+# store a `DerivedKey{foo, (Int,Int)}()`.)
+struct DerivedKey{F<:Function, TT<:Tuple{Vararg{Any}}} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
     # e.g. InputKey{InputMap{Int,Int}}(@0x00000001117b5780)
     print(io, "InputKey{$T}(@$(repr(UInt(pointer_from_objref(key.map.v)))))")
+end
+# Pretty Print DerivedKeys and CallArgs
+function Base.print(io::IO, key::DerivedKey{F, TT}) where {F, TT}
+    callexpr = Expr(:call, nameof(F.instance), TT.parameters...)
+    print(io, callexpr)
+end
+function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Vararg{Any}}) where {F, TT}
+    args = key[2:end]
+    f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
+    argsexprs = [Expr(:(::), args[i], fieldtype(TT, i)) for i in 1:length(args)]
+    callexpr = Expr(:call, f, argsexprs...)
+    print(io, "@derived $(string(callexpr))")
 end
 
 
@@ -188,6 +203,9 @@ function memoized_lookup_derived(component, key::DependencyKey)
 
     if value === nothing    # N.B., do not use `isnothing`
         v = try
+            if get(ENV, "SALSA_TRACE", "0") != "0"
+                @info "invoking $key"
+            end
             invoke_user_function(component, key...)
         catch
             pop_key(runtime)
@@ -310,17 +328,16 @@ macro derived(f)
         returntype = :(<:$returntype)
     end
     call_args_tuple = args_typetuple[2:end]  # Separate out just the CallArgs from args types
-    dicttype = :(Dict{Tuple{$(call_args_tuple...)}, $DerivedValue{$returntype}})
+    TT = Tuple{call_args_tuple...}
+    dicttype = :(Dict{$TT, $DerivedValue{$returntype}})
 
     # Rename user function.
     userfname = Symbol("%%__user_$fname")
     dict[:name] = userfname
     userfunc = MacroTools.combinedef(dict)
 
-    DerivedKeyParam = _derived_func_map_name(fname, call_args_tuple)
-
-    derived_key_t = DerivedKey{DerivedKeyParam}  # Use function object, not type, since obj isbits.
-    derived_key = derived_key_t()
+    derived_key_t = :($DerivedKey{typeof($fname), $TT})  # Use function object, not type, since obj isbits.
+    derived_key = :($derived_key_t())
 
     # Construct the originally named, visible function
     dict[:name] = fname
