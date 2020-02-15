@@ -108,7 +108,10 @@ end
 
 w = Workspaces.Workspace()
 w.relnames[] = []
-@show alldefs(w)
+@test alldefs(w) == ""
+w.relnames[] = [:A]
+w.defs[:A] = "1"
+@test alldefs(w) == "1"
 
 
 ############################
@@ -341,13 +344,20 @@ end
 # ----------------------------------
 
 Salsa.@component ErrorHandling begin
-    Salsa.@input v :: Salsa.InputScalar{Int}
+    Salsa.@input v :: InputScalar{Int}
+    Salsa.@input m :: InputMap{Int,Int}
 end
-Salsa.@derived function square_root(db::ErrorHandling)
-    sqrt(db.v[])
+Salsa.@derived function square_root(st::ErrorHandling)
+    sqrt(st.v[])
+end
+Salsa.@derived function get_val(st::ErrorHandling, key)
+    st.m[key]
+end
+Salsa.@derived function val_times_sqrt(st::ErrorHandling, key)
+    get_val(st, key) * square_root(st)
 end
 
-@testset "Robust to queries that throw errors" begin
+@testset "Robust to derived functions that throw errors" begin
     db = ErrorHandling()
 
     # Setting a value that should work as expected
@@ -360,7 +370,59 @@ end
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     db.v[] = 1
-    @test square_root(db) == 1  # ERROR: "Cycle in active query"
+    @test square_root(db) == 1
+end
+
+@testset "Multi-level derived functions that throw errors #1180" begin
+    db = ErrorHandling()
+
+    # Cause `square_root()` to throw an exeception, when being called from within another
+    # derived function.
+    db.v[] = -1
+    db.m[1] = 2
+    # Attempts 2 * sqrt(-1), and throws an error
+    @test_throws DomainError val_times_sqrt(db, 1)
+
+    # Now test that it's recovered gracefully from the error, and we can still use the DB
+    db.v[] = 1
+    @test square_root(db) == 1
+    @test val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
+
+    # Now check that we also recover from KeyErrors when reading from a map:
+    # Throw error:
+    @test_throws KeyError val_times_sqrt(db, 100)  # No key 100
+    # But this call still works:
+    @test val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
+end
+# -----------------------------------------------
+
+# Check KEY DELETIONS
+
+Salsa.@component ClassGrades begin
+    @input all_student_ids :: InputScalar{Tuple{Vararg{Int}}}  # Using a Tuple b/c it's immutable
+    @input student_grades :: InputMap{Int, Int}
+end
+@derived function average_grade(state)
+    tot = sum(state.student_grades[id] for id in state.all_student_ids[])
+    tot / length(state.all_student_ids[])
+end
+
+@testset "Key Deletions" begin
+    state = ClassGrades()
+    state.all_student_ids[] = (1,2)
+    state.student_grades[1] = 4.0
+    state.student_grades[2] = 2.0
+    @test average_grade(state) == 3
+
+    # Delete student `1`
+    delete!(state.student_grades, 1)
+    state.all_student_ids[] = (2,)
+    @test average_grade(state) == 2.0
+
+    # <Test that Salsa correctly throws an error given a programming bug>
+    # Delete student only from student_grades but leave in all_student_ids (a programming error)
+    delete!(state.student_grades, 2)
+    @test_throws KeyError average_grade(state)
 end
 
 # ----------------------------------
@@ -420,7 +482,7 @@ end
     db = MapAggregatesDB()
 
     # From within a derived function, calling anything but getindex fails:
-    
+
     # Reflection functions throw an error on an empty map.
     @test_throws ErrorException numelts(db)
     @test_throws ErrorException mapvals(db)

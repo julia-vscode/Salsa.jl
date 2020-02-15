@@ -21,6 +21,7 @@ export @component, @input, @derived, @connect, AbstractComponent, InputScalar, I
 #   - Input write methods panic if flag is set
 
 import MacroTools
+import DebugMode: @debug_mode, DBG
 
 
 const Revision = Int
@@ -54,7 +55,8 @@ const DependencyKey = Tuple{AbstractKey, Vararg{Any}}
 
 mutable struct DerivedValue{T}
     value::T
-    # A list of all the computations that were accessed when computing this value
+    # A list of all the computations that were accessed directly from this derived function
+    # (not all recursive dependencies) when computing this derived value.
     dependencies::Vector{DependencyKey}
     # These Revisions are used to determine whether we need to re-compute this value or not.
     # We need both of them in order to correctly implement the Early-Exit Optimization.
@@ -72,6 +74,7 @@ Runtime, which holds the state of all the derived maps.
 """
 abstract type AbstractComponent end
 
+# ===============================================================================================
 # Instances of these Key types are used to represent calls to Salsa computations, either
 # derived function calls or accesses to Salsa inputs.
 # We use these keys to connect a DependencyKey to the correct Map in the Runtime that stores
@@ -91,12 +94,16 @@ abstract type AbstractComponent end
 #       try implementing `length(::InputMap)` as a derived function. See the TODO note on
 #       that method, below.
 # (Parameterized on the type of map for type stability)
+# E.g. given @input a :: InputMap{Int,Int}; then `a[2]` -> DependencyKey: `(InputKey(a), 2)`
+# ================================================================================================
+
 struct InputKey{T} <: AbstractKey
     map::T  # Index input keys by the _instance_ of the map itself.
 end
 # A DerivedKey{F, TT} is stored in the dependencies of a Salsa derived function, in order to
-# represent a call to another derived function. (e.g. For `@derived foo(::Int,::Int)`, we'd
-# store a `DerivedKey{foo, (Int,Int)}()`.)
+# represent a call to another derived function.
+# E.g. Given `@derived foo(::Int,::Int)`, then calling `foo(2,3)` would store a dependency
+# as this DependencyKey: `(DerivedKey{foo, (Int,Int)}(), 2, 3)`
 struct DerivedKey{F<:Function, TT<:Tuple{Vararg{Any}}} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
@@ -117,19 +124,28 @@ function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Vararg{Any}}) where {F
 end
 
 
-# --- Component Runtime --------------------------
+# ======================= Component Runtime =========================================================
 
 const DerivedFunctionMapType = IdDict{DerivedKey, Dict}
 mutable struct Runtime
     # TODO deprecate the "active query" terminology for "derived function"
     current_revision::Int64
+    # active_query is used only for detecting cycles at runtime.
+    # It is just a stack trace of the derived functions as they're executed.
     active_query::Vector{DependencyKey}
+    # active_traces is used to determine the dependencies of derived functions
+    # This is used by push_key and pop_key below to trace the dependencies.
     active_traces::Vector{Vector{DependencyKey}}
 
     derived_function_maps::DerivedFunctionMapType
 
     Runtime() = new(0, [], [], DerivedFunctionMapType())
 end
+
+# ===================================================================
+# Operations on the active traces.
+# TODO we could decide if not in debug mode to do nothing to active_query at all, ever.
+# ===================================================================
 
 function is_in_derived(runtime::Runtime)
     !isempty(runtime.active_query) ||
@@ -140,19 +156,25 @@ function push_key(db::Runtime, dbkey)
     # Handle special case of first `push_key`
     if isempty(db.active_query)
         push!(db.active_traces, Vector{DependencyKey}())
-    elseif in(dbkey, db.active_query)
+    end
 
+    # Test for cycles if in debug mode
+    @debug_mode if in(dbkey, db.active_query)
         error("Cycle in derived function invoking $dbkey: $(db.active_query)")
     end
 
+    # Add a new call to the cycle detection mechanism
     push!(db.active_query, dbkey)
-    push!(db.active_traces[end], dbkey)
-    push!(db.active_traces, Vector{DependencyKey}())
+
+    # E.g. imagine we are inside foo(), and foo() has called bar()
+    push!(db.active_traces[end], dbkey)  # push bar onto foo's trace
+    push!(db.active_traces, Vector{DependencyKey}())  # start a new trace for bar
 end
 
 function pop_key(db::Runtime)
+    # e.g. Imagine we've finished executing bar()
     pop!(db.active_query)
-    deps = pop!(db.active_traces)
+    deps = pop!(db.active_traces)  # Finish bar's trace, go back to foo's trace
 
     # Handle special case of last `pop_key`
     if isempty(db.active_query)
@@ -160,81 +182,110 @@ function pop_key(db::Runtime)
         @assert isempty(db.active_traces)
     end
 
-    deps
+    deps # return all the direct dependencies called from bar
+end
+
+function current_trace(db::Runtime)
+    db.active_traces[end]
+end
+
+"""
+    trace_with_key(f::Function, db::Runtime, dbkey)
+Call `f()` surrounded by calls to `push_key` and `pop_key`. If any exceptions are raised
+pop the unused stack entry and then rethrow the error.
+"""
+function trace_with_key(f::Function, db::Runtime, dbkey)
+    push_key(db,dbkey)
+    try
+       f()
+    finally
+       pop_key(db)
+    end
+end
+
+
+# ========================================================================================
+# Methods will be added to this stub by the @derived function macro, which call the
+# function created from the user-provided code.
+# ========================================================================================
+
+function invoke_user_function end
+
+# ==================================================================================
+# The external-facing function generated by the @derived macro, delegates to
+# memoized_lookup_derived() with the correct DependencyKey.
+# This function checks to see if we already have a cached value for this key, otherwise
+# it invokes the user-provided computation (through `invoke_user_function`) to compute it
+# ===================================================================================
+
+function memoized_lookup_derived(component, key::DependencyKey)
+    existing_value = nothing
+    value = nothing
+    runtime = get_runtime(component)
+
+    trace_with_key(runtime, key) do
+         derived_key, args = key[1], key[2:end]
+         cache = get_map_for_key(runtime, derived_key)
+
+         if haskey(cache, args)
+             existing_value = getindex(cache, args)
+             if existing_value.verified_at == runtime.current_revision
+                 value = existing_value
+             # NOTE: still_valid() will recursively call memoized_lookup, potentially recomputing
+             #       all our recursive dependencies.
+             elseif still_valid(component, existing_value)
+                 existing_value.verified_at = runtime.current_revision
+                 value = existing_value
+             end
+         end
+                    # At this point (value == nothing) if (and only if) the args are not
+                    # in the cache, OR if they are in the cache, but they are no longer valid.
+         if value === nothing    # N.B., do not use `isnothing`
+             if get(ENV, "SALSA_TRACE", "0") != "0"
+                 @info "invoking $key"
+             end
+             v = invoke_user_function(component, key...)
+                    # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
+                    # to be purely immutable (but not necessarily julia `immutable structs`).
+             if existing_value !== nothing && isequal(existing_value.value, v)
+                    # Early Exit Optimization Part 2: (for Part 1 see methods for: Base.setindex(::Input*,value)
+                    # If a derived function computes the exact same value, we can terminate early and "backdate"
+                    # the changed_at field to say this value has _not_ changed.
+                 existing_value.verified_at = runtime.current_revision
+                    # Note that just because it computed the same value, it doesn't mean it computed it
+                    # in the same way, so we need to update the list of dependencies as well.
+                 existing_value.dependencies = current_trace(runtime)
+                 value = existing_value
+             else
+                    # The user function computed a new value, which we must now store.
+                 deps = current_trace(runtime)
+                 value = DerivedValue(v, deps, runtime.current_revision, runtime.current_revision)
+                 setindex!(cache, value, args)
+             end # existing_value
+         end # if value === nothing
+     end # do block for trace_with_key
+
+    return value
+end # memoized_lookup_derived
+
+"""
+A `value` is still valid if none of its dependencies have changed.
+"""
+function still_valid(component, value)
+    runtime = get_runtime(component)
+    for depkey in value.dependencies
+        dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey[1]), depkey)
+        if dep_changed_at > value.verified_at; return false end
+    end # for
+    true
 end
 
 function key_changed_at(component, map::Dict{<:Any, <:DerivedValue}, key::DependencyKey)
     _changed_at(memoized_lookup_derived(component, key))
 end
 
-function invoke_user_function end
 
-
-function memoized_lookup_derived(component, key::DependencyKey)
-    existing_value = nothing
-    value = nothing
-
-    runtime = get_runtime(component)
-
-    derived_key, args = key[1], key[2:end]
-    map = get_map_for_key(runtime, derived_key)
-
-    push_key(runtime, key)
-
-    if haskey(map, args)
-        existing_value = getindex(map, args)
-        if existing_value.verified_at == runtime.current_revision
-            value = existing_value
-        else
-            outdated = false
-            for depkey in existing_value.dependencies
-                dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey[1]), depkey)
-                if dep_changed_at > existing_value.verified_at
-                    outdated = true
-                    break
-                end
-            end
-            if !outdated
-                existing_value.verified_at = runtime.current_revision
-                value = existing_value
-            end
-        end
-    end
-
-    if value === nothing    # N.B., do not use `isnothing`
-        v = try
-            if get(ENV, "SALSA_TRACE", "0") != "0"
-                @info "invoking $key"
-            end
-            invoke_user_function(component, key...)
-        catch
-            pop_key(runtime)
-            rethrow()
-        end
-        # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
-        # to be purely immutable (but not necessarily julia `immutable structs`).
-        if existing_value !== nothing && isequal(existing_value.value, v)
-            # Early Exit Optimization Part 2: If a derived function computes the exact same
-            # value, we can terminate early and "backdate" the changed_at field to say this
-            # value has _not_ changed.
-            existing_value.verified_at = runtime.current_revision
-            value = existing_value
-            pop_key(runtime)
-        else
-            # The user function computed a new value, which we must now store.
-            deps = pop_key(runtime)
-            value = DerivedValue(v, deps, runtime.current_revision, runtime.current_revision)
-            setindex!(map, value, args)
-        end
-    else
-        pop_key(runtime)
-    end
-
-    return value
-end
-
-
-# =============
+# =============================================================================
 
 
 # --- Macro utils -----
@@ -668,9 +719,10 @@ end
 
 function memoized_lookup_input_helper(runtime::Runtime, input::InputTypes, key::DependencyKey)
     typedkey, call_args = key[1], key[2:end]
-    push_key(runtime, key)
-    value = getindex(input.v, call_args...)
-    pop_key(runtime)
+    local value
+    trace_with_key(runtime, key) do
+        value = getindex(input.v, call_args...)
+        end # do block
     return value
 end
 
