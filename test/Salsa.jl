@@ -6,6 +6,8 @@ using BenchmarkTools
 using Profile
 using Testy
 
+using Statistics: mean
+
 
 ###########################
 # Simple API usage
@@ -614,6 +616,94 @@ end
     push!(a, 4)
     @test_throws KeyError db.vec_to_int[a]
     @test_broken db.vec_to_int[[1,2,3]] == 1   # Something about the equality test being broken
+end
+
+# --- Manifest insertions and deletions ----------------------
+
+Salsa.@component ManifestAndMap begin
+    Salsa.@input all_names :: Salsa.InputScalar{Tuple{Vararg{String}}}
+    Salsa.@input grades :: Salsa.InputMap{String,Int}  # 0 - 100
+
+    Salsa.@input all_pass_fails :: Salsa.InputScalar{Tuple{Vararg{String}}}
+end
+
+# Firewall pattern for all_pass_fails
+@derived function is_pass_fail(st, name::String) :: Bool
+    name in st.all_pass_fails[]
+end
+@derived function grade_for_student(st, name::String) :: Int
+    if is_pass_fail(st, name)
+        st.grades[name] > 50 ? 100 : 0
+    else
+        st.grades[name]
+    end
+end
+@derived function course_average(st) :: Union{Int, Nothing}
+    if isempty(st.all_names[])
+        nothing
+    else
+        Int(round(mean([grade_for_student(st,name) for name in st.all_names[]])))
+    end
+end
+
+initial_grades = Dict("John"    =>  100,
+                      "Sam"     =>  66,
+                      "Amy"     =>  99,  # pass/fail -> 100
+                      "Nathan"  =>  30,  # pass/fail ->   0
+                     )
+
+@testset "Manifests and Maps" begin
+    st = ManifestAndMap()
+    st.all_names[] = tuple(keys(initial_grades)...)
+
+    for (n,g) in initial_grades
+        st.grades[n] = g
+    end
+
+    st.all_pass_fails[] = ("Nathan", "Amy")
+
+    # mean([100, 66, 100, 0]) == 66
+    @test course_average(st) == 66
+
+    @testset "insertions" begin
+        st.all_names[] = tuple(keys(initial_grades)..., "Vikram")
+
+        st.grades["Vikram"] = 33
+
+        # mean([100, 66, 100, 0, 33]) == 60
+        @test course_average(st) == 60
+
+        # Now make Vikram pass/fail
+        st.all_pass_fails[] = ("Nathan", "Amy", "Vikram")
+        # mean([100, 66, 100, 0, 0]) == 60
+        @test course_average(st) == 53
+    end
+
+    @testset "deletions" begin
+        st.all_names[] = tuple(keys(initial_grades)...,)
+
+        delete!(st.grades, "Vikram")
+        st.all_pass_fails[] = ("Nathan", "Amy")
+
+        # mean([100, 66, 100, 0]) == 66
+        @test course_average(st) == 66
+
+        # It's okay to have names in here that aren't used
+        st.all_pass_fails[] = ("Nathan", "Amy", "Vikram")
+
+        # mean([100, 66, 100, 0]) == 66
+        @test course_average(st) == 66
+    end
+    @testset "empty!(::InputMap)" begin
+        empty!(st.grades)
+
+        # Attempting to compute an average with an inconsistent manifest and map will throw
+        # a KeyError:
+        @test_throws KeyError course_average(st)
+
+        st.all_names[] = ()
+        @test isequal(course_average(st), nothing)  # Returns missing since nothing to average
+    end
 end
 
 # --- Composed Component -------------------------------------
