@@ -516,6 +516,7 @@ macro component(name, def)
             # Function to initialize the Salsa constructs, which is called by default as the
             # main constructor.
             function $Salsa.create(::Type{$name}, runtime::$Runtime = $Runtime())
+                @assert runtime.current_revision == 0  "Cannot attach a new Component to an existing Runtime! It violates dependency tracking assumptions."
                 # Construct Runtime metadata and Derived Functions
                 new(runtime,
                     # Construct input maps (which need the runtime reference)
