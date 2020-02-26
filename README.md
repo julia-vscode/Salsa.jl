@@ -1,3 +1,4 @@
 # Salsa
 
-[![Build Status](https://travis-ci.com/nhdaly/Salsa.jl.svg?branch=master)](https://travis-ci.com/nhdaly/Salsa.jl)
+[![Build Status](https://travis-ci.com/RelationalAI-oss/Salsa.jl.svg?branch=master)](https://travis-ci.com/RelationalAI-oss/Salsa.jl)
+
