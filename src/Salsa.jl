@@ -21,7 +21,8 @@ export @component, @input, @derived, @connect, AbstractComponent, InputScalar, I
 #   - Input write methods panic if flag is set
 
 import MacroTools
-import DebugMode: @debug_mode, DBG
+include("DebugMode.jl")
+import .DebugMode: @debug_mode, DBG
 
 
 const Revision = Int
