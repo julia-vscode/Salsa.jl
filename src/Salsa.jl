@@ -24,21 +24,6 @@ import MacroTools
 include("DebugMode.jl")
 import .DebugMode: @debug_mode, DBG
 
-struct SalsaDerivedException <: Base.Exception
-    captured_exception::Any
-    salsa_trace::Vector{Tuple}
-end
-function Base.showerror(io::IO, exc::SalsaDerivedException)
-    print(io, nameof(typeof(exc)))
-    println(io, ": Error encountered while executing Salsa derived function:")
-    Base.showerror(io, exc.captured_exception)
-    println(io, "\n\n------ Salsa Trace -----------------")
-    for (idx, call_args) in enumerate(reverse(exc.salsa_trace))
-        println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
-    end
-    println(io, "------------------------------------")
-end
-
 
 const Revision = Int
 
@@ -81,6 +66,22 @@ mutable struct DerivedValue{T}
 end
 
 _changed_at(v::DerivedValue)::Revision where T = v.changed_at
+
+struct SalsaDerivedException{T} <: Base.Exception
+    captured_exception::T
+    salsa_trace::Vector{DependencyKey}
+end
+function Base.showerror(io::IO, exc::SalsaDerivedException)
+    print(io, nameof(typeof(exc)))
+    println(io, ": Error encountered while executing Salsa derived function:")
+    Base.showerror(io, exc.captured_exception)
+    println(io, "\n\n------ Salsa Trace -----------------")
+    for (idx, call_args) in enumerate(exc.salsa_trace)
+        println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
+    end
+    println(io, "------------------------------------")
+end
+
 
 """
     abstract type AbstractComponent
@@ -217,7 +218,7 @@ function trace_with_key(f::Function, rt::Runtime, dbkey)
     catch e
         # Wrap the exception in a Salsa exception (at the lowest layer).
         if !(e isa SalsaDerivedException)
-            rethrow(SalsaDerivedException(e, rt.active_query))
+            rethrow(SalsaDerivedException{typeof(e)}(e, copy(rt.active_query)))
         else
             rethrow()
         end
