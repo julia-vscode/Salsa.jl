@@ -24,6 +24,21 @@ import MacroTools
 include("DebugMode.jl")
 import .DebugMode: @debug_mode, DBG
 
+struct SalsaDerivedException <: Base.Exception
+    captured_exception::Any
+    salsa_trace::Vector{Tuple}
+end
+function Base.showerror(io::IO, exc::SalsaDerivedException)
+    print(io, nameof(typeof(exc)))
+    println(io, ": Error encountered while executing Salsa derived function:")
+    Base.showerror(io, exc.captured_exception)
+    println(io, "\n\n------ Salsa Trace -----------------")
+    for (idx, call_args) in enumerate(reverse(exc.salsa_trace))
+        println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
+    end
+    println(io, "------------------------------------")
+end
+
 
 const Revision = Int
 
@@ -191,16 +206,23 @@ function current_trace(db::Runtime)
 end
 
 """
-    trace_with_key(f::Function, db::Runtime, dbkey)
+    trace_with_key(f::Function, rt::Runtime, dbkey)
 Call `f()` surrounded by calls to `push_key` and `pop_key`. If any exceptions are raised
 pop the unused stack entry and then rethrow the error.
 """
-function trace_with_key(f::Function, db::Runtime, dbkey)
-    push_key(db,dbkey)
+function trace_with_key(f::Function, rt::Runtime, dbkey)
+    push_key(rt, dbkey)
     try
-       f()
+        f()
+    catch e
+        # Wrap the exception in a Salsa exception (at the lowest layer).
+        if !(e isa SalsaDerivedException)
+            rethrow(SalsaDerivedException(e, rt.active_query))
+        else
+            rethrow()
+        end
     finally
-       pop_key(db)
+        pop_key(rt)
     end
 end
 
