@@ -48,16 +48,15 @@ Salsa.@component Workspace begin
     Salsa.@input i2::Salsa.InputScalar{Int}
     Salsa.@connect compiler::Compiler
 end
+Salsa.@component TestStorage begin
+    Salsa.@connect workspace::Workspace
+end
 @testset "connected components" begin
     w = Workspace()
     w.i2[] = 1
     w.i2[] = 2
     @test w.i2[] == 2
     @test w.compiler.runtime.current_revision == w.runtime.current_revision == 2
-
-    Salsa.@component TestStorage begin
-        Salsa.@connect workspace::Workspace
-    end
 
     c = TestStorage()
 
@@ -76,12 +75,29 @@ end
     count = 0  # For tracking caching
     Salsa.@derived function foofunc(c::Workspace, x::Int, y::Vector{Int}) :: Int
         count += 1
-        sum([3 + x , y...])
+        sum([c.compiler.i[0] + x , y...])
     end
+    c.workspace.compiler.i[0] = 1
     foofunc(c.workspace, 1, [1,2])  # runs foofunc (and prints)
     foofunc(c.workspace, 1, [1,2])  # returns cached value
     foofunc(c.workspace, 3, [1,2])  # runs again
     @test count == 2
+
+    # This is broken b/c we don't store which component a derived func was called on.
+    @test_broken begin
+        # Multi-level derived functions
+        Salsa.@derived function outer(c::TestStorage)::Int
+            foofunc(c.workspace, 2, Int[])
+        end
+        count = 0
+        outer(c)  # Increments count
+        outer(c)  # This result should be cached
+        @test count == 1
+        c.workspace.compiler.i[0] = 2
+        outer(c)  # Increments count
+        outer(c)  # This result should be cached
+        @test count == 2
+    end
 end
 
 @testset "Multiple methods same function" begin
@@ -767,6 +783,10 @@ end
 @component B begin
     @connect a :: A
 end
+
+
+
+
 @testset "composed component" begin
     b = B()
     b.a.x[1] = 10
