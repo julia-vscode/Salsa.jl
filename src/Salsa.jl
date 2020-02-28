@@ -76,7 +76,7 @@ function Base.showerror(io::IO, exc::SalsaDerivedException)
     println(io, ": Error encountered while executing Salsa derived function:")
     Base.showerror(io, exc.captured_exception)
     println(io, "\n\n------ Salsa Trace -----------------")
-    for (idx, call_args) in enumerate(exc.salsa_trace)
+    for (idx, call_args) in enumerate(reverse(exc.salsa_trace))
         println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
     end
     println(io, "------------------------------------")
