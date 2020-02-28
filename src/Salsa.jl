@@ -46,13 +46,19 @@ const CallArgs = Tuple  # (Unused, but defined here for clarity. Could be used i
 # identifies requests for the cached value (ie accessing inputs or calling derived
 # functions). Instances of these key types are used to identify _which maps_ the remaining
 # arguments (as a CallArgs tuple) are the key to.
-# e.g. foo(component, 2,3,5) -> DerivedKey{Foo, (Int,Int,Int)}()
+# e.g. foo(component, 2,3,5) -> DerivedKey{Foo, (MyComponent,Int,Int,Int)}()
 abstract type AbstractKey end
-# To specify dependencies between Salsa computations, we use a tuple whose first element is a
-# key instance that specifies a call (above) and remaining elements are the arguments to
-# that call.
-# e.g. foo(component, 2,3,5) -> (DerivedKey{Foo, (Int,Int,Int)}(), 2,3,5)
-const DependencyKey = Tuple{AbstractKey, Vararg{Any}}
+# To specify dependencies between Salsa computations, we use a named tuple that stores
+# everything needed to rerun the computation: (key, function-args)
+# The `key` is the AbstractKey instance that specifies _which computation_ was performed
+# (above) and the `args` is a Tuple of the user-provided arguments to that call. If the
+# computation was a derived function, the first argument of the `args` tuple will be an
+# `AbstractComponent`, as is required for Derived functions.
+# Examples:
+#   foo(component,1,2,3) -> (; key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
+#                              args=(db, 1, 2, 3))
+#   db.map[1,2]    -> (; key=InputKey{:map}(), args=(1, 2))
+const DependencyKey = NamedTuple{(:key,:args), Tuple{AbstractKey,Tuple}}
 
 mutable struct DerivedValue{T}
     value::T
@@ -119,8 +125,9 @@ struct InputKey{T} <: AbstractKey
 end
 # A DerivedKey{F, TT} is stored in the dependencies of a Salsa derived function, in order to
 # represent a call to another derived function.
-# E.g. Given `@derived foo(::Int,::Int)`, then calling `foo(2,3)` would store a dependency
-# as this DependencyKey: `(DerivedKey{foo, (Int,Int)}(), 2, 3)`
+# E.g. Given `@derived foo(::MyComponent,::Int,::Int)`, then calling `foo(component,2,3)`
+# would store a dependency as this _DependencyKey_ (defined above):
+#   `DependencyKey((; key=DerivedKey{foo, (MyComponent,Int,Int)}(), args=(component,2,3)))`
 struct DerivedKey{F<:Function, TT<:Tuple{Vararg{Any}}} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
@@ -248,7 +255,7 @@ function memoized_lookup_derived(component, key::DependencyKey)
     runtime = get_runtime(component)
 
     trace_with_key(runtime, key) do
-         derived_key, args = key[1], key[2:end]
+         derived_key, args = key.key, key.args
          cache = get_map_for_key(runtime, derived_key)
 
          if haskey(cache, args)
@@ -268,7 +275,7 @@ function memoized_lookup_derived(component, key::DependencyKey)
              if get(ENV, "SALSA_TRACE", "0") != "0"
                  @info "invoking $key"
              end
-             v = invoke_user_function(component, key...)
+             v = invoke_user_function(key.key, key.args...)
                     # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
                     # to be purely immutable (but not necessarily julia `immutable structs`).
              if existing_value !== nothing && isequal(existing_value.value, v)
@@ -402,8 +409,7 @@ macro derived(f)
     if !isconcretetype(returntype)
         returntype = :(<:$returntype)
     end
-    call_args_tuple = args_typetuple[2:end]  # Separate out just the CallArgs from args types
-    TT = Tuple{call_args_tuple...}
+    TT = Tuple{args_typetuple...}
     dicttype = :(Dict{$TT, $DerivedValue{$returntype}})
 
     # Rename user function.
@@ -418,7 +424,7 @@ macro derived(f)
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = ($derived_key, $(argnames[2:end]...),)
+        key = $DependencyKey((; key = $derived_key, args = ($(argnames...),)))
         $memoized_lookup_derived($(argnames[1]), key).value
     end
     visible_func = MacroTools.combinedef(dict)
@@ -441,7 +447,7 @@ macro derived(f)
             cache
         end
 
-        function $(@__MODULE__()).invoke_user_function($(args[1]), ::$derived_key_t, $(args[2:end]...))
+        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(args...))
             $userfname($(argnames[1]), $(argnames[2:end]...))
         end
 
@@ -674,12 +680,14 @@ Base.setindex!(i::InputTypes, v, k1, k2, ks...) = Base.setindex!(i, v, tuple(k1,
 
 # Access scalar inputs like a Reference: `input[]`
 function Base.getindex(input::InputScalar)
-    memoized_lookup_input(input.runtime, input, (InputKey(input),)).value
+    memoized_lookup_input(input.runtime, input,
+                          DependencyKey((;key=InputKey(input),args=()))).value
 end
 
 # Access map inputs like a Dict: `input[k1, k2]`
 function Base.getindex(input::InputMap, call_args...)
-    memoized_lookup_input(input.runtime, input, (InputKey(input), call_args...)).value
+    memoized_lookup_input(input.runtime, input,
+                          DependencyKey((;key=InputKey(input), args=call_args))).value
 end
 
 # The argument `value` can be anything that can be converted to type `T`. We omit the
@@ -743,7 +751,7 @@ function key_changed_at(component, map::InputTypes, key::DependencyKey)::Revisio
 end
 
 function memoized_lookup_input_helper(runtime::Runtime, input::InputTypes, key::DependencyKey)
-    typedkey, call_args = key[1], key[2:end]
+    typedkey, call_args = key.key, key.args
     local value
     trace_with_key(runtime, key) do
         value = getindex(input.v, call_args...)
