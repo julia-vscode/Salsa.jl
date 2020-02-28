@@ -58,10 +58,7 @@ abstract type AbstractKey end
 #   foo(component,1,2,3) -> (; key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
 #                              args=(db, 1, 2, 3))
 #   db.map[1,2]    -> (; key=InputKey{:map}(), args=(1, 2))
-const DependencyKey{KeyType<:AbstractKey} = NamedTuple{(:key,:args), Tuple{KeyType,Tuple}}
-function DependencyKey(nt::NamedTuple{(:key,:args), Tuple{T,Tuple}}) where T<:AbstractKey
-    DependencyKey{T}(nt)
-end
+const DependencyKey = NamedTuple{(:key,:args), Tuple{AbstractKey,Tuple}}
 
 mutable struct DerivedValue{T}
     value::T
@@ -85,8 +82,8 @@ function Base.showerror(io::IO, exc::SalsaDerivedException)
     println(io, ": Error encountered while executing Salsa derived function:")
     Base.showerror(io, exc.captured_exception)
     println(io, "\n\n------ Salsa Trace -----------------")
-    for (idx, call_args) in enumerate(reverse(exc.salsa_trace))
-        println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
+    for (idx, dependency_key) in enumerate(reverse(exc.salsa_trace))
+        println(io, "[$idx] ", dependency_key)  # Uses pretty-printing for Traces defined below
     end
     println(io, "------------------------------------")
 end
@@ -142,12 +139,21 @@ function Base.print(io::IO, key::DerivedKey{F, TT}) where {F, TT}
     callexpr = Expr(:call, nameof(F.instance), TT.parameters...)
     print(io, callexpr)
 end
-function Base.print(io::IO, key::DependencyKey{<:DerivedKey{F,TT}}) where {F, TT}
-    args = key[2:end]
+function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Tuple}) where {F, TT}
+    (component, call_args) = key[2][1], key[2][2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
-    argsexprs = [Expr(:(::), args[i], fieldtype(TT, i)) for i in 1:length(args)]
+    argsexprs = [Expr(:(::), fieldtype(TT, 1)),
+                 (Expr(:(::), call_args[i], fieldtype(TT, i)) for i in 1:length(call_args))...]
     callexpr = Expr(:call, f, argsexprs...)
     print(io, "@derived $(string(callexpr))")
+end
+function Base.print(io::IO, dependency::DependencyKey)
+    key = dependency.key
+    if key isa InputKey
+        print(io, "@input ", key, "[$(dependency.args)]")
+    else  # DerivedKey
+        print(io, (dependency.key, dependency.args))
+    end
 end
 
 
@@ -159,10 +165,10 @@ mutable struct Runtime
     current_revision::Int64
     # active_query is used only for detecting cycles at runtime.
     # It is just a stack trace of the derived functions as they're executed.
-    active_query::Vector{DependencyKey{<:Any}}
+    active_query::Vector{DependencyKey}
     # active_traces is used to determine the dependencies of derived functions
     # This is used by push_key and pop_key below to trace the dependencies.
-    active_traces::Vector{Vector{DependencyKey{<:Any}}}
+    active_traces::Vector{Vector{DependencyKey}}
 
     derived_function_maps::DerivedFunctionMapType
 
@@ -427,7 +433,7 @@ macro derived(f)
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = $DependencyKey{$derived_key_t}((; key = $derived_key, args = ($(argnames...),)))
+        key = $DependencyKey((; key = $derived_key, args = ($(argnames...),)))
         $memoized_lookup_derived($(argnames[1]), key).value
     end
     visible_func = MacroTools.combinedef(dict)
