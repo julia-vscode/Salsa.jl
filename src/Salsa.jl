@@ -58,7 +58,10 @@ abstract type AbstractKey end
 #   foo(component,1,2,3) -> (; key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
 #                              args=(db, 1, 2, 3))
 #   db.map[1,2]    -> (; key=InputKey{:map}(), args=(1, 2))
-const DependencyKey = NamedTuple{(:key,:args), Tuple{AbstractKey,Tuple}}
+const DependencyKey{KeyType<:AbstractKey} = NamedTuple{(:key,:args), Tuple{KeyType,Tuple}}
+function DependencyKey(nt::NamedTuple{(:key,:args), Tuple{T,Tuple}}) where T<:AbstractKey
+    DependencyKey{T}(nt)
+end
 
 mutable struct DerivedValue{T}
     value::T
@@ -139,7 +142,7 @@ function Base.print(io::IO, key::DerivedKey{F, TT}) where {F, TT}
     callexpr = Expr(:call, nameof(F.instance), TT.parameters...)
     print(io, callexpr)
 end
-function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Vararg{Any}}) where {F, TT}
+function Base.print(io::IO, key::DependencyKey{<:DerivedKey{F,TT}}) where {F, TT}
     args = key[2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
     argsexprs = [Expr(:(::), args[i], fieldtype(TT, i)) for i in 1:length(args)]
@@ -156,10 +159,10 @@ mutable struct Runtime
     current_revision::Int64
     # active_query is used only for detecting cycles at runtime.
     # It is just a stack trace of the derived functions as they're executed.
-    active_query::Vector{DependencyKey}
+    active_query::Vector{DependencyKey{<:Any}}
     # active_traces is used to determine the dependencies of derived functions
     # This is used by push_key and pop_key below to trace the dependencies.
-    active_traces::Vector{Vector{DependencyKey}}
+    active_traces::Vector{Vector{DependencyKey{<:Any}}}
 
     derived_function_maps::DerivedFunctionMapType
 
@@ -424,7 +427,7 @@ macro derived(f)
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = $DependencyKey((; key = $derived_key, args = ($(argnames...),)))
+        key = $DependencyKey{$derived_key_t}((; key = $derived_key, args = ($(argnames...),)))
         $memoized_lookup_derived($(argnames[1]), key).value
     end
     visible_func = MacroTools.combinedef(dict)
