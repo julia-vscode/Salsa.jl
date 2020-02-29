@@ -58,8 +58,8 @@ abstract type AbstractKey end
 #   foo(component,1,2,3) -> DependencyKey(key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
 #                                         args=(db, 1, 2, 3))
 #   db.map[1,2]    -> DependencyKey(key=InputKey{:map}(), args=(1, 2))
-Base.@kwdef struct DependencyKey
-    key::AbstractKey
+Base.@kwdef struct DependencyKey{KT<:AbstractKey}
+    key::KT
     args::Tuple
 end
 # Note that floats should be compared for equality, not NaN-ness
@@ -151,34 +151,32 @@ function Base.print(io::IO, key::DerivedKey{F, TT}) where {F, TT}
     callexpr = Expr(:call, nameof(F.instance), TT.parameters...)
     print(io, callexpr)
 end
-function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Tuple}) where {F, TT}
-    (component, call_args) = key[2][1], key[2][2:end]
+# Pretty-print a DependencyKey for tracing and printing in SalsaDerivedExceptions:
+# @input InputKey{...}(...)[1,2,3]
+# @input foo(component::MyComponent, 1::Int, 2::Any, 3::Number)
+function Base.print(io::IO, dependency::DependencyKey{<:InputKey})
+    print(io, "@input ", dependency.key, "[$(dependency.args)]")
+end
+function Base.print(io::IO, dependency::DependencyKey{<:DerivedKey{F,TT}}) where {F,TT}
+    args = dependency.args
+    (component, call_args) = args[1], args[2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
     argsexprs = [Expr(:(::), nameof(typeof(component))),
                  (Expr(:(::), call_args[i], fieldtype(TT, i+1)) for i in 1:length(call_args))...]
     callexpr = Expr(:call, f, argsexprs...)
     print(io, "@derived $(string(callexpr))")
 end
-# Pretty-print a DependencyKey for tracing and printing in SalsaDerivedExceptions:
-# @input InputKey{...}(...)[1,2,3]
-# @input foo(component::MyComponent, 1::Int, 2::Any, 3::Number)
-function Base.print(io::IO, dependency::DependencyKey)
-    key = dependency.key
-    if key isa InputKey
-        print(io, "@input ", key, "[$(dependency.args)]")
-    else  # DerivedKey
-        print(io, (dependency.key, dependency.args))
-    end
-end
 # Override `show` to prevent printing Components from inside Derived functions.
 function Base.show(io::IO, dependency::DependencyKey)
     key = dependency.key
+    args = dependency.args
     if key isa InputKey
-        show(io, key)
+        print(io, "DependencyKey(key=$key, args=$args)")
     else  # DerivedKey
-        args = dependency.args
-        argsstr = "(::$(typeof(args[1])), $((args[2:end])...))"
-        show(io, "DependencyKey(key=$key, args=$argsstr)")
+        # Don't print Component, just print its type.
+        call_args_str = (repr(a) for a in args[2:end])
+        argsstr = "(::$(typeof(args[1])), $(call_args_str...))"
+        print(io, "DependencyKey(key=$key, args=$argsstr)")
     end
 end
 
