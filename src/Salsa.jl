@@ -55,10 +55,22 @@ abstract type AbstractKey end
 # computation was a derived function, the first argument of the `args` tuple will be an
 # `AbstractComponent`, as is required for Derived functions.
 # Examples:
-#   foo(component,1,2,3) -> (; key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
-#                              args=(db, 1, 2, 3))
-#   db.map[1,2]    -> (; key=InputKey{:map}(), args=(1, 2))
-const DependencyKey = NamedTuple{(:key,:args), Tuple{AbstractKey,Tuple}}
+#   foo(component,1,2,3) -> DependencyKey(key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
+#                                         args=(db, 1, 2, 3))
+#   db.map[1,2]    -> DependencyKey(key=InputKey{:map}(), args=(1, 2))
+Base.@kwdef struct DependencyKey
+    key::AbstractKey
+    args::Tuple
+end
+# Note that floats should be compared for equality, not NaN-ness
+function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
+    isequal(x1.key, x2.key) && isequal(x1.args, x2.args)
+end
+function Base.isless(x1::DependencyKey, x2::DependencyKey)
+    isequal(x1.key, x2.key) ? isless(x1.args, x2.args) : isless(x1.key, x2.key)
+end
+Base.hash(x::DependencyKey, h::UInt) = hash(x.keys, hash(x.args, h))
+
 
 mutable struct DerivedValue{T}
     value::T
@@ -127,7 +139,7 @@ end
 # represent a call to another derived function.
 # E.g. Given `@derived foo(::MyComponent,::Int,::Int)`, then calling `foo(component,2,3)`
 # would store a dependency as this _DependencyKey_ (defined above):
-#   `DependencyKey((; key=DerivedKey{foo, (MyComponent,Int,Int)}(), args=(component,2,3)))`
+#   `DependencyKey(key=DerivedKey{foo, (MyComponent,Int,Int)}(), args=(component,2,3))`
 struct DerivedKey{F<:Function, TT<:Tuple{Vararg{Any}}} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
@@ -143,10 +155,13 @@ function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Tuple}) where {F, TT}
     (component, call_args) = key[2][1], key[2][2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
     argsexprs = [Expr(:(::), nameof(typeof(component))),
-                 (Expr(:(::), call_args[i], fieldtype(TT, i)) for i in 1:length(call_args))...]
+                 (Expr(:(::), call_args[i], fieldtype(TT, i+1)) for i in 1:length(call_args))...]
     callexpr = Expr(:call, f, argsexprs...)
     print(io, "@derived $(string(callexpr))")
 end
+# Pretty-print a DependencyKey for tracing and printing in SalsaDerivedExceptions:
+# @input InputKey{...}(...)[1,2,3]
+# @input foo(component::MyComponent, 1::Int, 2::Any, 3::Number)
 function Base.print(io::IO, dependency::DependencyKey)
     key = dependency.key
     if key isa InputKey
@@ -163,7 +178,7 @@ function Base.show(io::IO, dependency::DependencyKey)
     else  # DerivedKey
         args = dependency.args
         argsstr = "(::$(typeof(args[1])), $((args[2:end])...))"
-        show(io, "DependencyKey((; key=$key, args=$argsstr")
+        show(io, "DependencyKey(key=$key, args=$argsstr)")
     end
 end
 
@@ -330,7 +345,7 @@ A `value` is still valid if none of its dependencies have changed.
 function still_valid(component, value)
     runtime = get_runtime(component)
     for depkey in value.dependencies
-        dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey[1]), depkey)
+        dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey.key), depkey)
         if dep_changed_at > value.verified_at; return false end
     end # for
     true
@@ -449,7 +464,7 @@ macro derived(f)
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = $DependencyKey((; key = $derived_key, args = ($(argnames...),)))
+        key = $DependencyKey(key = $derived_key, args = ($(argnames...),))
         $memoized_lookup_derived($(argnames[1]), key).value
     end
     visible_func = MacroTools.combinedef(dict)
@@ -705,13 +720,13 @@ Base.setindex!(i::InputTypes, v, k1, k2, ks...) = Base.setindex!(i, v, tuple(k1,
 # Access scalar inputs like a Reference: `input[]`
 function Base.getindex(input::InputScalar)
     memoized_lookup_input(input.runtime, input,
-                          DependencyKey((;key=InputKey(input),args=()))).value
+                          DependencyKey(key=InputKey(input), args=())).value
 end
 
 # Access map inputs like a Dict: `input[k1, k2]`
 function Base.getindex(input::InputMap, call_args...)
     memoized_lookup_input(input.runtime, input,
-                          DependencyKey((;key=InputKey(input), args=call_args))).value
+                          DependencyKey(key=InputKey(input), args=call_args)).value
 end
 
 # The argument `value` can be anything that can be converted to type `T`. We omit the
