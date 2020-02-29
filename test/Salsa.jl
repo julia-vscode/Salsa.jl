@@ -83,21 +83,18 @@ end
     foofunc(c.workspace, 3, [1,2])  # runs again
     @test count == 2
 
-    # This is broken b/c we don't store which component a derived func was called on.
-    @test_broken begin
-        # Multi-level derived functions
-        Salsa.@derived function outer(c::TestStorage)::Int
-            foofunc(c.workspace, 2, Int[])
-        end
-        count = 0
-        outer(c)  # Increments count
-        outer(c)  # This result should be cached
-        @test count == 1
-        c.workspace.compiler.i[0] = 2
-        outer(c)  # Increments count
-        outer(c)  # This result should be cached
-        @test count == 2
+    # Multi-level derived functions
+    Salsa.@derived function outer(c::TestStorage)::Int
+        foofunc(c.workspace, 2, Int[])
     end
+    count = 0
+    outer(c)  # Increments count
+    outer(c)  # This result should be cached
+    @test count == 1
+    c.workspace.compiler.i[0] = 2
+    outer(c)  # Increments count
+    outer(c)  # This result should be cached
+    @test count == 2
 end
 
 @testset "Multiple methods same function" begin
@@ -232,15 +229,17 @@ end
 
     whole_program_ast(db)
 
-    _ast_map = [d for d in values(db.runtime.derived_function_maps) if eltype(keys(d)) == Tuple{String}][1]
-    @test _ast_map[("a.rs",)].changed_at == 3
-    @test _ast_map[("a.rs",)].verified_at == 3
-    @test _ast_map[("b.rs",)].changed_at == 3
-    @test _ast_map[("b.rs",)].verified_at == 3
+    _ast_map = Salsa.get_map_for_key(db.runtime,
+        Salsa.DerivedKey{typeof(ast),Tuple{MyQueryGroup,String}}())
+    @test _ast_map[(db, "a.rs",)].changed_at == 3
+    @test _ast_map[(db, "a.rs",)].verified_at == 3
+    @test _ast_map[(db, "b.rs",)].changed_at == 3
+    @test _ast_map[(db, "b.rs",)].verified_at == 3
 
-    _whole_program_ast_map = [d for d in values(db.runtime.derived_function_maps) if eltype(keys(d)) == Tuple{}][1]
-    @test _whole_program_ast_map[()].changed_at == 3
-    @test _whole_program_ast_map[()].verified_at == 3
+    _whole_program_ast_map = Salsa.get_map_for_key(db.runtime,
+        Salsa.DerivedKey{typeof(whole_program_ast),Tuple{MyQueryGroup}}())
+    @test _whole_program_ast_map[(db,)].changed_at == 3
+    @test _whole_program_ast_map[(db,)].verified_at == 3
 
     db.source_text["a.rs"] = "fn foo() {}"
 
@@ -251,13 +250,13 @@ end
 
     whole_program_ast(db)
 
-    @test _ast_map[("a.rs",)].changed_at == 4
-    @test _ast_map[("a.rs",)].verified_at == 4
-    @test _ast_map[("b.rs",)].changed_at == 3
-    @test _ast_map[("b.rs",)].verified_at == 4
+    @test _ast_map[(db,"a.rs",)].changed_at == 4
+    @test _ast_map[(db,"a.rs",)].verified_at == 4
+    @test _ast_map[(db,"b.rs",)].changed_at == 3
+    @test _ast_map[(db,"b.rs",)].verified_at == 4
 
-    @test _whole_program_ast_map[()].changed_at == 4
-    @test _whole_program_ast_map[()].verified_at == 4
+    @test _whole_program_ast_map[(db,)].changed_at == 4
+    @test _whole_program_ast_map[(db,)].verified_at == 4
 
     # NOTE: users should not be calling `keys()` in derived queries, since it won't get added to dependency graph.
     filenames = sort([ name for name = keys(db.source_text) ])
@@ -448,10 +447,12 @@ Salsa.@component MapAggregatesDB begin
     Salsa.@input map::Salsa.InputMap{Int, Int}
 end
 
+# Should throw an error for reflection inside a Derived function!
 Salsa.@derived function numelts(db::AbstractComponent)
     length(db.map)
 end
 
+# Should throw an error for reflection inside a Derived function!
 Salsa.@derived mapvals(db::AbstractComponent) = sort(collect(values(db.map)))
 Salsa.@derived mapkeys(db::AbstractComponent) = sort(collect(keys(db.map)))
 Salsa.@derived function valsum(db::AbstractComponent)
@@ -460,7 +461,7 @@ end
 Salsa.@derived function keysum(db::AbstractComponent)
     sum(keys(db.map))
 end
-    # This actually loops over the elements, ∴ _touches_ them.
+# This actually loops over the elements, ∴ _touches_ them (also an error).
 Salsa.@derived function looped_valsum(db::AbstractComponent)
     out = 0
     for (k,v) in db.map ; out += v ; end
@@ -630,8 +631,9 @@ end
 
     # Update `a` outside the db
     push!(a, 4)
+    # now it can't be used as a key, because it doesn't match the original hash (i think)?
     @test_throws SalsaDerivedException{KeyError} db.vec_to_int[a]
-    @test_broken db.vec_to_int[[1,2,3]] == 1   # Something about the equality test being broken
+    @test_throws SalsaDerivedException{KeyError} db.vec_to_int[[1,2,3]] == 1
 end
 
 # --- Manifest insertions and deletions ----------------------

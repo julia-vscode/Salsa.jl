@@ -142,7 +142,7 @@ end
 function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Tuple}) where {F, TT}
     (component, call_args) = key[2][1], key[2][2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
-    argsexprs = [Expr(:(::), fieldtype(TT, 1)),
+    argsexprs = [Expr(:(::), nameof(typeof(component))),
                  (Expr(:(::), call_args[i], fieldtype(TT, i)) for i in 1:length(call_args))...]
     callexpr = Expr(:call, f, argsexprs...)
     print(io, "@derived $(string(callexpr))")
@@ -153,6 +153,17 @@ function Base.print(io::IO, dependency::DependencyKey)
         print(io, "@input ", key, "[$(dependency.args)]")
     else  # DerivedKey
         print(io, (dependency.key, dependency.args))
+    end
+end
+# Override `show` to prevent printing Components from inside Derived functions.
+function Base.show(io::IO, dependency::DependencyKey)
+    key = dependency.key
+    if key isa InputKey
+        show(io, key)
+    else  # DerivedKey
+        args = dependency.args
+        argsstr = "(::$(typeof(args[1])), $((args[2:end])...))"
+        show(io, "DependencyKey((; key=$key, args=$argsstr")
     end
 end
 
@@ -174,6 +185,11 @@ mutable struct Runtime
 
     Runtime() = new(0, [], [], DerivedFunctionMapType())
 end
+# Overload `show` to break cycle by not recursing into all fields (since DependencyKeys
+# contain Component which contains this Runtime, leading to a cycle).
+function Base.show(io::IO, rt::Runtime)
+    print(io, "Salsa.Runtime($(rt.current_revision), ...)")
+end
 
 # ===================================================================
 # Operations on the active traces.
@@ -193,7 +209,7 @@ function push_key(db::Runtime, dbkey)
 
     # Test for cycles if in debug mode
     @debug_mode if in(dbkey, db.active_query)
-        error("Cycle in derived function invoking $dbkey: $(db.active_query)")
+        error("Cycle in derived function invoking $dbkey.")
     end
 
     # Add a new call to the cycle detection mechanism
@@ -622,8 +638,7 @@ end
 
 function assert_safe(input::InputTypes)
     if is_in_derived(input)
-        active_query = input.runtime.active_query
-        error("Attempted impure operation in a derived function: $(active_query)")
+        error("Attempted impure operation in a derived function!")
     end
 end
 
