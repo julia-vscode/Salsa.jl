@@ -1,14 +1,11 @@
-"""
-    module Salsa
-
-Implementation of a framework for incremental metadata computations via
-memoization, inspired by Rust's Salsa.
-
-* `@component`
-* `@derived`
-* `@input`
-"""
 module Salsa
+
+# Document this Module via the README.md file.
+@doc let path = joinpath(dirname(@__DIR__), "README.md")
+    include_dependency(path)
+    replace(read(path, String), "```julia" => "```jldoctest")
+end Salsa
+
 
 export @component, @input, @derived, @connect, AbstractComponent, InputScalar, InputMap
 
