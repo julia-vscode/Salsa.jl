@@ -58,9 +58,9 @@ abstract type AbstractKey end
 #   foo(component,1,2,3) -> DependencyKey(key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
 #                                         args=(component, 1, 2, 3))
 #   component.map[1,2]    -> DependencyKey(key=InputKey{...}(component.map), args=(1, 2))
-Base.@kwdef struct DependencyKey{KT<:AbstractKey}
+Base.@kwdef struct DependencyKey{KT<:AbstractKey, ARG_T<:Tuple}
     key::KT
-    args::Tuple
+    args::ARG_T
 end
 # Note that floats should be compared for equality, not NaN-ness
 function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
