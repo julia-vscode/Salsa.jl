@@ -56,8 +56,8 @@ abstract type AbstractKey end
 # `AbstractComponent`, as is required for Derived functions.
 # Examples:
 #   foo(component,1,2,3) -> DependencyKey(key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
-#                                         args=(db, 1, 2, 3))
-#   db.map[1,2]    -> DependencyKey(key=InputKey{:map}(), args=(1, 2))
+#                                         args=(component, 1, 2, 3))
+#   component.map[1,2]    -> DependencyKey(key=InputKey{...}(component.map), args=(1, 2))
 Base.@kwdef struct DependencyKey{KT<:AbstractKey}
     key::KT
     args::Tuple
