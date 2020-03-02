@@ -260,13 +260,15 @@ function trace_with_key(f::Function, rt::Runtime, dbkey)
     push_key(rt, dbkey)
     try
         f()
-    catch e
-        # Wrap the exception in a Salsa exception (at the lowest layer).
-        if !(e isa SalsaDerivedException)
-            rethrow(SalsaDerivedException{typeof(e)}(e, copy(rt.active_query)))
-        else
-            rethrow()
-        end
+    # TODO: Re-enable this once we are comfortable with handling SalsaDerivedExceptions
+    #       throughout our codebase!
+    # catch e
+    #     # Wrap the exception in a Salsa exception (at the lowest layer).
+    #     if !(e isa SalsaDerivedException)
+    #         rethrow(SalsaDerivedException{typeof(e)}(e, copy(rt.active_query)))
+    #     else
+    #         rethrow()
+    #     end
     finally
         pop_key(rt)
     end

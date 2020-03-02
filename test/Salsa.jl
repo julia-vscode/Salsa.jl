@@ -385,7 +385,7 @@ end
 
     # Setting a value that will cause square_root() to throw an Exception
     db.v[] = -1
-    @test_throws SalsaDerivedException{DomainError} square_root(db)
+    @test_throws DomainError square_root(db)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     db.v[] = 1
@@ -400,7 +400,7 @@ end
     db.v[] = -1
     db.m[1] = 2
     # Attempts 2 * sqrt(-1), and throws an error
-    @test_throws SalsaDerivedException{DomainError} val_times_sqrt(db, 1)
+    @test_throws DomainError val_times_sqrt(db, 1)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     db.v[] = 1
@@ -409,7 +409,7 @@ end
 
     # Now check that we also recover from KeyErrors when reading from a map:
     # Throw error:
-    @test_throws SalsaDerivedException{KeyError} val_times_sqrt(db, 100)  # No key 100
+    @test_throws KeyError val_times_sqrt(db, 100)  # No key 100
     # But this call still works:
     @test val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
 end
@@ -441,7 +441,7 @@ end
     # <Test that Salsa correctly throws an error given a programming bug>
     # Delete student only from student_grades but leave in all_student_ids (a programming error)
     delete!(state.student_grades, 2)
-    @test_throws SalsaDerivedException{KeyError} average_grade(state)
+    @test_throws KeyError average_grade(state)
 end
 
 # ----------------------------------
@@ -505,23 +505,23 @@ end
     # From within a derived function, calling anything but getindex fails:
 
     # Reflection functions throw an error on an empty map.
-    @test_throws SalsaDerivedException{ErrorException} numelts(db)
-    @test_throws SalsaDerivedException{ErrorException} mapvals(db)
-    @test_throws SalsaDerivedException{ErrorException} valsum(db)
-    @test_throws SalsaDerivedException{ErrorException} mapkeys(db)
-    @test_throws SalsaDerivedException{ErrorException} keysum(db)
+    @test_throws ErrorException numelts(db)
+    @test_throws ErrorException mapvals(db)
+    @test_throws ErrorException valsum(db)
+    @test_throws ErrorException mapkeys(db)
+    @test_throws ErrorException keysum(db)
     # The version that loops over the (k,v) items, and therefore actually touches them.
-    @test_throws SalsaDerivedException{ErrorException} looped_valsum(db)
+    @test_throws ErrorException looped_valsum(db)
 
     # If you update the values, calling anything but getindex still fails.
     db.map[1] = 10
     db.map[2] = 20
-    @test_throws SalsaDerivedException{ErrorException} numelts(db)
-    @test_throws SalsaDerivedException{ErrorException} mapvals(db)
-    @test_throws SalsaDerivedException{ErrorException} valsum(db)
-    @test_throws SalsaDerivedException{ErrorException} mapkeys(db)
-    @test_throws SalsaDerivedException{ErrorException} keysum(db)
-    @test_throws SalsaDerivedException{ErrorException} looped_valsum(db)
+    @test_throws ErrorException numelts(db)
+    @test_throws ErrorException mapvals(db)
+    @test_throws ErrorException valsum(db)
+    @test_throws ErrorException mapkeys(db)
+    @test_throws ErrorException keysum(db)
+    @test_throws ErrorException looped_valsum(db)
 end
 
 # ----------------------------------
@@ -634,8 +634,8 @@ end
     # Update `a` outside the db
     push!(a, 4)
     # now it can't be used as a key, because it doesn't match the original hash (i think)?
-    @test_throws SalsaDerivedException{KeyError} db.vec_to_int[a]
-    @test_throws SalsaDerivedException{KeyError} db.vec_to_int[[1,2,3]] == 1
+    @test_throws KeyError db.vec_to_int[a]
+    @test_throws KeyError db.vec_to_int[[1,2,3]] == 1
 end
 
 # --- Manifest insertions and deletions ----------------------
@@ -719,7 +719,7 @@ initial_grades = Dict("John"    =>  100,
 
         # Attempting to compute an average with an inconsistent manifest and map will throw
         # a KeyError:
-        @test_throws SalsaDerivedException{KeyError} course_average(st)
+        @test_throws KeyError course_average(st)
 
         st.all_names[] = ()
         @test isequal(course_average(st), nothing)  # Returns missing since nothing to average
