@@ -46,13 +46,31 @@ const CallArgs = Tuple  # (Unused, but defined here for clarity. Could be used i
 # identifies requests for the cached value (ie accessing inputs or calling derived
 # functions). Instances of these key types are used to identify _which maps_ the remaining
 # arguments (as a CallArgs tuple) are the key to.
-# e.g. foo(component, 2,3,5) -> DerivedKey{Foo, (Int,Int,Int)}()
+# e.g. foo(component, 2,3,5) -> DerivedKey{Foo, (MyComponent,Int,Int,Int)}()
 abstract type AbstractKey end
-# To specify dependencies between Salsa computations, we use a tuple whose first element is a
-# key instance that specifies a call (above) and remaining elements are the arguments to
-# that call.
-# e.g. foo(component, 2,3,5) -> (DerivedKey{Foo, (Int,Int,Int)}(), 2,3,5)
-const DependencyKey = Tuple{AbstractKey, Vararg{Any}}
+# To specify dependencies between Salsa computations, we use a named tuple that stores
+# everything needed to rerun the computation: (key, function-args)
+# The `key` is the AbstractKey instance that specifies _which computation_ was performed
+# (above) and the `args` is a Tuple of the user-provided arguments to that call. If the
+# computation was a derived function, the first argument of the `args` tuple will be an
+# `AbstractComponent`, as is required for Derived functions.
+# Examples:
+#   foo(component,1,2,3) -> DependencyKey(key=DerivedKey{Foo, (MyComponent,Int,Int,Int)}(),
+#                                         args=(component, 1, 2, 3))
+#   component.map[1,2]    -> DependencyKey(key=InputKey{...}(component.map), args=(1, 2))
+Base.@kwdef struct DependencyKey{KT<:AbstractKey, ARG_T<:Tuple}
+    key::KT
+    args::ARG_T
+end
+# Note that floats should be compared for equality, not NaN-ness
+function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
+    isequal(x1.key, x2.key) && isequal(x1.args, x2.args)
+end
+function Base.isless(x1::DependencyKey, x2::DependencyKey)
+    isequal(x1.key, x2.key) ? isless(x1.args, x2.args) : isless(x1.key, x2.key)
+end
+Base.hash(x::DependencyKey, h::UInt) = hash(x.keys, hash(x.args, h))
+
 
 mutable struct DerivedValue{T}
     value::T
@@ -76,8 +94,8 @@ function Base.showerror(io::IO, exc::SalsaDerivedException)
     println(io, ": Error encountered while executing Salsa derived function:")
     Base.showerror(io, exc.captured_exception)
     println(io, "\n\n------ Salsa Trace -----------------")
-    for (idx, call_args) in enumerate(reverse(exc.salsa_trace))
-        println(io, "[$idx] ", call_args)  # Uses pretty-printing for Traces defined below
+    for (idx, dependency_key) in enumerate(reverse(exc.salsa_trace))
+        println(io, "[$idx] ", dependency_key)  # Uses pretty-printing for Traces defined below
     end
     println(io, "------------------------------------")
 end
@@ -119,8 +137,9 @@ struct InputKey{T} <: AbstractKey
 end
 # A DerivedKey{F, TT} is stored in the dependencies of a Salsa derived function, in order to
 # represent a call to another derived function.
-# E.g. Given `@derived foo(::Int,::Int)`, then calling `foo(2,3)` would store a dependency
-# as this DependencyKey: `(DerivedKey{foo, (Int,Int)}(), 2, 3)`
+# E.g. Given `@derived foo(::MyComponent,::Int,::Int)`, then calling `foo(component,2,3)`
+# would store a dependency as this _DependencyKey_ (defined above):
+#   `DependencyKey(key=DerivedKey{foo, (MyComponent,Int,Int)}(), args=(component,2,3))`
 struct DerivedKey{F<:Function, TT<:Tuple{Vararg{Any}}} <: AbstractKey end
 
 function Base.show(io::IO, key::InputKey{T}) where T
@@ -132,12 +151,33 @@ function Base.print(io::IO, key::DerivedKey{F, TT}) where {F, TT}
     callexpr = Expr(:call, nameof(F.instance), TT.parameters...)
     print(io, callexpr)
 end
-function Base.print(io::IO, key::Tuple{DerivedKey{F, TT}, Vararg{Any}}) where {F, TT}
-    args = key[2:end]
+# Pretty-print a DependencyKey for tracing and printing in SalsaDerivedExceptions:
+# @input InputKey{...}(...)[1,2,3]
+# @input foo(component::MyComponent, 1::Int, 2::Any, 3::Number)
+function Base.print(io::IO, dependency::DependencyKey{<:InputKey})
+    print(io, "@input ", dependency.key, "[$(dependency.args)]")
+end
+function Base.print(io::IO, dependency::DependencyKey{<:DerivedKey{F,TT}}) where {F,TT}
+    args = dependency.args
+    (component, call_args) = args[1], args[2:end]
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
-    argsexprs = [Expr(:(::), args[i], fieldtype(TT, i)) for i in 1:length(args)]
+    argsexprs = [Expr(:(::), nameof(typeof(component))),
+                 (Expr(:(::), call_args[i], fieldtype(TT, i+1)) for i in 1:length(call_args))...]
     callexpr = Expr(:call, f, argsexprs...)
     print(io, "@derived $(string(callexpr))")
+end
+# Override `show` to prevent printing Components from inside Derived functions.
+function Base.show(io::IO, dependency::DependencyKey)
+    key = dependency.key
+    args = dependency.args
+    if key isa InputKey
+        print(io, "DependencyKey(key=$key, args=$args)")
+    else  # DerivedKey
+        # Don't print Component, just print its type.
+        call_args_str = (repr(a) for a in args[2:end])
+        argsstr = "(::$(typeof(args[1])), $(call_args_str...))"
+        print(io, "DependencyKey(key=$key, args=$argsstr)")
+    end
 end
 
 
@@ -158,6 +198,11 @@ mutable struct Runtime
 
     Runtime() = new(0, [], [], DerivedFunctionMapType())
 end
+# Overload `show` to break cycle by not recursing into all fields (since DependencyKeys
+# contain Component which contains this Runtime, leading to a cycle).
+function Base.show(io::IO, rt::Runtime)
+    print(io, "Salsa.Runtime($(rt.current_revision), ...)")
+end
 
 # ===================================================================
 # Operations on the active traces.
@@ -177,7 +222,7 @@ function push_key(db::Runtime, dbkey)
 
     # Test for cycles if in debug mode
     @debug_mode if in(dbkey, db.active_query)
-        error("Cycle in derived function invoking $dbkey: $(db.active_query)")
+        error("Cycle in derived function invoking $dbkey.")
     end
 
     # Add a new call to the cycle detection mechanism
@@ -248,7 +293,7 @@ function memoized_lookup_derived(component, key::DependencyKey)
     runtime = get_runtime(component)
 
     trace_with_key(runtime, key) do
-         derived_key, args = key[1], key[2:end]
+         derived_key, args = key.key, key.args
          cache = get_map_for_key(runtime, derived_key)
 
          if haskey(cache, args)
@@ -268,7 +313,7 @@ function memoized_lookup_derived(component, key::DependencyKey)
              if get(ENV, "SALSA_TRACE", "0") != "0"
                  @info "invoking $key"
              end
-             v = invoke_user_function(component, key...)
+             v = invoke_user_function(key.key, key.args...)
                     # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
                     # to be purely immutable (but not necessarily julia `immutable structs`).
              if existing_value !== nothing && isequal(existing_value.value, v)
@@ -298,7 +343,7 @@ A `value` is still valid if none of its dependencies have changed.
 function still_valid(component, value)
     runtime = get_runtime(component)
     for depkey in value.dependencies
-        dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey[1]), depkey)
+        dep_changed_at = key_changed_at(component, get_map_for_key(runtime, depkey.key), depkey)
         if dep_changed_at > value.verified_at; return false end
     end # for
     true
@@ -402,8 +447,7 @@ macro derived(f)
     if !isconcretetype(returntype)
         returntype = :(<:$returntype)
     end
-    call_args_tuple = args_typetuple[2:end]  # Separate out just the CallArgs from args types
-    TT = Tuple{call_args_tuple...}
+    TT = Tuple{args_typetuple...}
     dicttype = :(Dict{$TT, $DerivedValue{$returntype}})
 
     # Rename user function.
@@ -418,7 +462,7 @@ macro derived(f)
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = ($derived_key, $(argnames[2:end]...),)
+        key = $DependencyKey(key = $derived_key, args = ($(argnames...),))
         $memoized_lookup_derived($(argnames[1]), key).value
     end
     visible_func = MacroTools.combinedef(dict)
@@ -441,7 +485,7 @@ macro derived(f)
             cache
         end
 
-        function $(@__MODULE__()).invoke_user_function($(args[1]), ::$derived_key_t, $(args[2:end]...))
+        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(args...))
             $userfname($(argnames[1]), $(argnames[2:end]...))
         end
 
@@ -607,8 +651,7 @@ end
 
 function assert_safe(input::InputTypes)
     if is_in_derived(input)
-        active_query = input.runtime.active_query
-        error("Attempted impure operation in a derived function: $(active_query)")
+        error("Attempted impure operation in a derived function!")
     end
 end
 
@@ -674,12 +717,14 @@ Base.setindex!(i::InputTypes, v, k1, k2, ks...) = Base.setindex!(i, v, tuple(k1,
 
 # Access scalar inputs like a Reference: `input[]`
 function Base.getindex(input::InputScalar)
-    memoized_lookup_input(input.runtime, input, (InputKey(input),)).value
+    memoized_lookup_input(input.runtime, input,
+                          DependencyKey(key=InputKey(input), args=())).value
 end
 
 # Access map inputs like a Dict: `input[k1, k2]`
 function Base.getindex(input::InputMap, call_args...)
-    memoized_lookup_input(input.runtime, input, (InputKey(input), call_args...)).value
+    memoized_lookup_input(input.runtime, input,
+                          DependencyKey(key=InputKey(input), args=call_args)).value
 end
 
 # The argument `value` can be anything that can be converted to type `T`. We omit the
@@ -743,7 +788,7 @@ function key_changed_at(component, map::InputTypes, key::DependencyKey)::Revisio
 end
 
 function memoized_lookup_input_helper(runtime::Runtime, input::InputTypes, key::DependencyKey)
-    typedkey, call_args = key[1], key[2:end]
+    typedkey, call_args = key.key, key.args
     local value
     trace_with_key(runtime, key) do
         value = getindex(input.v, call_args...)
@@ -804,6 +849,13 @@ Component. This macro should be used inside of a [`@component`](@ref), since it 
 used as part of the macro processing. The macro is used to auto-generate a constructor that
 correctly initializes the embedded Component. (The generated constructor simply passes the
 provided Runtime through to the Component's constructor.)
+
+The `@connect` macro is used by Salsa to automatically add initialization for the specified
+field in the auto-generated `Salsa.create(MyComponent)` function. e.g. given a declaration
+`@connect a :: A`, `create()` will automatically perform:
+```julia
+    out.a = A(runtime)
+```
 
 # Example
 ```julia
