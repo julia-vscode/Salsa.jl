@@ -850,6 +850,13 @@ used as part of the macro processing. The macro is used to auto-generate a const
 correctly initializes the embedded Component. (The generated constructor simply passes the
 provided Runtime through to the Component's constructor.)
 
+The `@connect` macro is used by Salsa to automatically add initialization for the specified
+field in the auto-generated `Salsa.create(MyComponent)` function. e.g. given a declaration
+`@connect a :: A`, `create()` will automatically perform:
+```julia
+    out.a = A(runtime)
+```
+
 # Example
 ```julia
     Salsa.@component MyComponent begin

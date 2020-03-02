@@ -46,6 +46,8 @@ Salsa.@component Compiler begin
 end
 Salsa.@component Workspace begin
     Salsa.@input i2::Salsa.InputScalar{Int}
+    # NOTE: @connect is the simplest way to embed another component and make sure they have
+    # the same Runtime. It's important that they share the same runtime.
     Salsa.@connect compiler::Compiler
 end
 Salsa.@component TestStorage begin
@@ -786,16 +788,24 @@ end
     @connect a :: A
 end
 
-
-
+@derived function x_at(a::A, k)
+    a.x[k]
+end
+@derived function x_at(b::B, k)
+    b.a.x[k]
+end
 
 @testset "composed component" begin
     b = B()
     b.a.x[1] = 10
     @test b.a.x[1] == 10
+    @test x_at(b, 1) == 10
+    @test x_at(b.a, 1) == 10
+    b.a.x[1] = 20
+    @test b.a.x[1] == 20
+    @test x_at(b, 1) == 20
+    @test x_at(b.a, 1) == 20
 end
-
-
 
 # --------------------------------------------------
 # End of tests, start of benchmark
