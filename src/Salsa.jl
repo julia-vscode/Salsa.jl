@@ -9,13 +9,10 @@ end Salsa
 
 export @component, @input, @derived, @connect, AbstractComponent, InputScalar, InputMap
 
-# TODO (TJG):
+# TODO:
 # - Mutable-until-shared discipline
 #   - branch() / ismutable() methods
-# - Add a derived_call_active flag
-#   - Wrappers for derived methods set/clear this
-#   - Input read methods check flag and skip dependency tracking if not set
-#   - Input write methods panic if flag is set
+# - Input read methods check skip dependency tracking if not in derived function
 
 import MacroTools
 include("DebugMode.jl")
