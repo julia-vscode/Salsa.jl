@@ -63,7 +63,7 @@ end
 function Base.isless(x1::DependencyKey, x2::DependencyKey)
     isequal(x1.key, x2.key) ? isless(x1.args, x2.args) : isless(x1.key, x2.key)
 end
-Base.hash(x::DependencyKey, h::UInt) = hash(x.keys, hash(x.args, h))
+Base.hash(x::DependencyKey, h::UInt) = hash(x.key, hash(x.args, h))
 
 
 mutable struct DerivedValue{T}
