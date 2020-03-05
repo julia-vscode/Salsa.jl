@@ -179,11 +179,10 @@ end
 
 const DerivedFunctionMapType = IdDict{DerivedKey, Dict}
 mutable struct Runtime
-    # TODO deprecate the "active query" terminology for "derived function"
     current_revision::Int64
-    # active_query is used only for detecting cycles at runtime.
+    # current_trace is used only for detecting cycles at runtime.
     # It is just a stack trace of the derived functions as they're executed.
-    active_query::Vector{DependencyKey}
+    current_trace::Vector{DependencyKey}
     # active_traces is used to determine the dependencies of derived functions
     # This is used by push_key and pop_key below to trace the dependencies.
     active_traces::Vector{Vector{DependencyKey}}
@@ -200,27 +199,27 @@ end
 
 # ===================================================================
 # Operations on the active traces.
-# TODO we could decide if not in debug mode to do nothing to active_query at all, ever.
+# TODO we could decide if not in debug mode to do nothing to current_trace at all, ever.
 # ===================================================================
 
 function is_in_derived(runtime::Runtime)
-    !isempty(runtime.active_query) ||
+    !isempty(runtime.current_trace) ||
         !isempty(runtime.active_traces)
 end
 
 function push_key(db::Runtime, dbkey)
     # Handle special case of first `push_key`
-    if isempty(db.active_query)
+    if isempty(db.current_trace)
         push!(db.active_traces, Vector{DependencyKey}())
     end
 
     # Test for cycles if in debug mode
-    @debug_mode if in(dbkey, db.active_query)
+    @debug_mode if in(dbkey, db.current_trace)
         error("Cycle in derived function invoking $dbkey.")
     end
 
     # Add a new call to the cycle detection mechanism
-    push!(db.active_query, dbkey)
+    push!(db.current_trace, dbkey)
 
     # E.g. imagine we are inside foo(), and foo() has called bar()
     push!(db.active_traces[end], dbkey)  # push bar onto foo's trace
@@ -229,11 +228,11 @@ end
 
 function pop_key(db::Runtime)
     # e.g. Imagine we've finished executing bar()
-    pop!(db.active_query)
+    pop!(db.current_trace)
     deps = pop!(db.active_traces)  # Finish bar's trace, go back to foo's trace
 
     # Handle special case of last `pop_key`
-    if isempty(db.active_query)
+    if isempty(db.current_trace)
         pop!(db.active_traces)
         @assert isempty(db.active_traces)
     end
@@ -259,7 +258,7 @@ function trace_with_key(f::Function, rt::Runtime, dbkey)
     # catch e
     #     # Wrap the exception in a Salsa exception (at the lowest layer).
     #     if !(e isa SalsaDerivedException)
-    #         rethrow(SalsaDerivedException{typeof(e)}(e, copy(rt.active_query)))
+    #         rethrow(SalsaDerivedException{typeof(e)}(e, copy(rt.current_trace)))
     #     else
     #         rethrow()
     #     end
