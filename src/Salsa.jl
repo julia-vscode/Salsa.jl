@@ -63,7 +63,7 @@ end
 function Base.isless(x1::DependencyKey, x2::DependencyKey)
     isequal(x1.key, x2.key) ? isless(x1.args, x2.args) : isless(x1.key, x2.key)
 end
-Base.hash(x::DependencyKey, h::UInt) = hash(x.keys, hash(x.args, h))
+Base.hash(x::DependencyKey, h::UInt) = hash(x.key, hash(x.args, h))
 
 
 mutable struct DerivedValue{T}
@@ -177,6 +177,20 @@ end
 
 # ======================= Component Runtime =========================================================
 
+# Performance Optimization: De-duplicating Derived Function Traces
+# We collect the dependencies of a Derived Function as a Vector{DependencyKey}. It's
+# important that we maintain the _order_ of the dependencies, because we need to check their
+# validity in order when there are changes, since a change in an earlier dependecy may
+# invalidate the _keys_ of a later dependency (consider how deleting an item from a set
+# affects an aggregating derived function such as `sum()`).
+# However, as a performance optimization, we do not need to keep _duplicate_ keys, so we
+# also maintain a Set{DependencyKey} for deduplicating the keys as they're recorded. Using
+# an unordered, hash-based Set + a Vector together provides the best of both worlds.
+# The set should be unordered and hash-based because we want quick membership verification
+# (in O(1)-time), which `Set` is, and is discarded at the end of recording the dependencies.
+const TraceOfDependencyKeys = Tuple{Vector{DependencyKey}, Set{DependencyKey}}
+TraceOfDependencyKeys()::TraceOfDependencyKeys = ([], Set([]))
+
 const DerivedFunctionMapType = IdDict{DerivedKey, Dict}
 mutable struct Runtime
     current_revision::Int64
@@ -185,7 +199,7 @@ mutable struct Runtime
     current_trace::Vector{DependencyKey}
     # active_traces is used to determine the dependencies of derived functions
     # This is used by push_key and pop_key below to trace the dependencies.
-    active_traces::Vector{Vector{DependencyKey}}
+    active_traces::Vector{TraceOfDependencyKeys}
 
     derived_function_maps::DerivedFunctionMapType
 
@@ -210,7 +224,7 @@ end
 function push_key(db::Runtime, dbkey)
     # Handle special case of first `push_key`
     if isempty(db.current_trace)
-        push!(db.active_traces, Vector{DependencyKey}())
+        push!(db.active_traces, TraceOfDependencyKeys())
     end
 
     # Test for cycles if in debug mode
@@ -222,8 +236,15 @@ function push_key(db::Runtime, dbkey)
     push!(db.current_trace, dbkey)
 
     # E.g. imagine we are inside foo(), and foo() has called bar()
-    push!(db.active_traces[end], dbkey)  # push bar onto foo's trace
-    push!(db.active_traces, Vector{DependencyKey}())  # start a new trace for bar
+    # Push bar onto foo's trace
+    (ordered_dependencies, seen_dependencies) = db.active_traces[end]
+    # Performance Optimization: De-duplicating Derived Function Traces
+    if dbkey ∉ seen_dependencies
+        push!(ordered_dependencies, dbkey)
+        push!(seen_dependencies, dbkey)
+    end
+    # Start a new trace for bar
+    push!(db.active_traces, TraceOfDependencyKeys())
 end
 
 function pop_key(db::Runtime)
@@ -241,7 +262,9 @@ function pop_key(db::Runtime)
 end
 
 function current_trace(db::Runtime)
-    db.active_traces[end]
+    # Performance Optimization: De-duplicating Derived Function Traces
+    (ordered_dependencies, seen_dependencies) = db.active_traces[end]
+    ordered_dependencies
 end
 
 """
