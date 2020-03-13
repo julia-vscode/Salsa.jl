@@ -745,6 +745,11 @@ function Base.getindex(input::InputMap, call_args...)
                           DependencyKey(key=InputKey(input), args=call_args)).value
 end
 
+function Base.get!(default::Function, input::InputMap{K,V}, key::K) where V where K
+    assert_safe(input)
+    get!(() -> InputValue{V}(default(), input.runtime.current_revision), input.v, key).value
+end
+
 # The argument `value` can be anything that can be converted to type `T`. We omit the
 # explicit type `value::T` because that would preclude a `value::S` where `S` can be
 # converted to a `T`.
