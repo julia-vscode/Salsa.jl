@@ -8,8 +8,8 @@ The App and the UI were built over a few hours, with the UI using
 [TerminalMenus.jl](https://github.com/nick-paul/TerminalMenus.jl). The UI is simple, but
 sufficient to show the behavior.
 
-The Spreadsheet App is written in less than two hundred lines, and uses Salsa's
-macros to automatically detect dependencies between julia functions at runtime, which
+The Spreadsheet App is written in less than two hundred lines and uses Salsa's
+macros to automatically detect dependencies between julia functions at runtime. This
 creates the necessary dependencies between cells to correctly incrementally recompute
 results.
 
