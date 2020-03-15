@@ -36,7 +36,7 @@ end
 TerminalMenus.cancel(ui::SpreadsheetDisplay) = ui.selected = (-1,-1)
 
 function TerminalMenus.header(ui::SpreadsheetDisplay)
-    ""
+    "──────"^ui.maxcols
 #    #"""
 #    #Select a field to recurse into or ↩ to ascend. [q]uit.
 #    #"""
