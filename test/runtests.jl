@@ -1,4 +1,4 @@
-using Testy
+using Test
 
 @testset "Salsa.jl" begin
     include("Salsa.jl")

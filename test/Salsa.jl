@@ -4,7 +4,7 @@ using Salsa
 using Salsa: AbstractComponent, InputMap, InputScalar, @component, @input, @connect, SalsaDerivedException
 using BenchmarkTools
 using Profile
-using Testy
+using Test
 
 using Statistics: mean
 
@@ -748,7 +748,7 @@ end
 module ExampleDatabaseModule
 using ..Salsa
 using ..Salsa: @connect
-using Testy
+using Test
 # Defined before the Workspace
 @component Compiler begin
     @input relation_defs :: InputMap{Int, String}
