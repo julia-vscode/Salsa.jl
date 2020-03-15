@@ -82,23 +82,36 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
         ui.row_cursor = idx
     end
 
+    col_width = 5
+
+    function column_name(i)
+        out = ""
+        while i > 0
+            out *= "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]
+            i -= 26
+        end
+        out
+    end
+
     # Handle fake row for column cursor
     if idx === 1
         print(buf, "Cell Value:")
     elseif idx === 2
         print(buf, cell_text(ui.ss, (ui.row_cursor, ui.column_cursor)))
     elseif idx === 3
-        print(buf, repeat("-", 5))
+        print(buf,
+            join(["  ",
+                  (lpad(rpad(column_name(i),2), col_width) for i in 1:ui.maxrows)..., ""], " "))
     else
-        cell_row = [cell_text(ui.ss, (row,i)) for i in 1:ui.maxcols]
+        cell_row = [lpad(SpreadsheetApp.cell_value(ui.ss, (row,i)), col_width)  for i in 1:ui.maxcols]
 
         # Display the line
         line = if ui.row_cursor == row
-            join(["", (lpad(c,3) for c in cell_row[1:ui.column_cursor-1])...], "|") *
-            "[" * lpad(cell_row[ui.column_cursor],3) * "]" *
-            join([(lpad(c,3) for c in cell_row[ui.column_cursor+1:end])..., ""], "|")
+            join(["$row ", cell_row[1:ui.column_cursor-1]...], "|") *
+            "[$(cell_row[ui.column_cursor])]" *
+            join([cell_row[ui.column_cursor+1:end]..., ""], "|")
         else
-            join(["", (lpad(c,3) for c in cell_row)..., ""], "|")
+            join(["$row ", cell_row..., ""], "|")
         end
 
         print(buf, line)
@@ -109,6 +122,9 @@ end
 function run_ui(ui::SpreadsheetDisplay)
     while true
         choice = request("", ui)
+        if choice === (-1,-1)
+            return
+        end
         print(stdout, "Enter new contents: ")
         new_text = readline(stdin)
         set_cell_text!(ui.ss, choice, new_text)
