@@ -1,5 +1,7 @@
 module UI
 
+import REPL
+
 using ..SpreadsheetApp: SpreadsheetApp, Spreadsheet, CellId, cell_text, set_cell_text!
 
 import TerminalMenus
@@ -35,27 +37,9 @@ TerminalMenus.cancel(ui::SpreadsheetDisplay) = ui.selected = (-1,-1)
 
 function TerminalMenus.header(ui::SpreadsheetDisplay)
     ""
-#    "Cell Text:\n" *
-#    cell_text(ui.ss, (ui.row_cursor, ui.column_cursor)) *"\n" *
-#    repeat("-", 10)
-#
-#    cursor_len = length(TerminalMenus.CONFIG[:cursor])
-#    # print a ">" on the selected entry
-#    selected_row ? print(buf, TerminalMenus.CONFIG[:cursor]) : print(buf, repeat(" ", cursor_len))
-#    print(buf, " ") # Space between cursor and text
-#
-#    line = replace(ui.options[idx], "\n" => "\\n")
-#    line,ui.scroll_horizontal = _custom_trimWidth(line, term_width, selected_row, cursor_len, ui.scroll_horizontal)
-#
-#    print(buf, line)
 #    #"""
 #    #Select a field to recurse into or ↩ to ascend. [q]uit.
 #    #"""
-#    #=
-#    Toggles: [o]ptimize, [w]arn, [d]ebuginfo, [s]yntax highlight for Source/LLVM/Native.
-#    Show: [S]ource code, [A]ST, [L]LVM IR, [N]ative code
-#    Advanced: dump [P]arams cache.
-#    =#
 end
 
 function TerminalMenus.keypress(ui::SpreadsheetDisplay, key::UInt32)
@@ -76,11 +60,6 @@ function TerminalMenus.pick(ui::SpreadsheetDisplay, row_cursor::Int)
 end
 function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int, selected_row::Bool, term_width::Int)
     row = idx - 3   # To account for the fake rows
-
-    # Store the current cursor in the ui:
-    if selected_row
-        ui.row_cursor = idx
-    end
 
     col_width = 5
 
@@ -110,7 +89,6 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
     else
         cell_row = [lpad(SpreadsheetApp.cell_display_str(ui.ss, (row,i)), col_width)  for i in 1:ui.maxcols]
 
-
         # Display the line
         line = if ui.row_cursor == row
             join(["$row ", cell_row[1:ui.column_cursor-1]...], "|") *
@@ -122,6 +100,60 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
 
         print(buf, line)
     end
+end
+
+# This is sad, but we need to override this whole function to correctly handle printing the
+# header:
+# The generic printMenu function is used for displaying the state of a
+#   menu to the screen. Menus must implement `writeLine` and `options`
+#   and have fields `pagesize::Int` and `pageoffset::Int` as part of
+#   their type definition
+function TerminalMenus.printMenu(out, m::SpreadsheetDisplay, cursor::Int; init::Bool=false)
+    # Store the current cursor in the ui:
+    m.row_cursor = cursor
+
+    # -----------------------------------------------------------------------
+    # --- The rest of this function is copied verbatim from TerminalMenus ---
+
+
+    TerminalMenus.CONFIG[:supress_output] && return
+
+    buf = IOBuffer()
+
+    # Move the cursor to the beginning of where it should print
+    # Don't do this on the initial print
+    lines = m.pagesize-1
+    if init
+        m.pageoffset = 0
+    else
+        print(buf, "\x1b[999D\x1b[$(lines)A")
+    end
+
+    for i in (m.pageoffset+1):(m.pageoffset + m.pagesize)
+        print(buf, "\x1b[2K")
+
+        if i == m.pageoffset+1 && m.pageoffset > 0
+            # first line && scrolled past first entry
+            print(buf, TerminalMenus.CONFIG[:up_arrow])
+        elseif i == m.pagesize+m.pageoffset && i != length(TerminalMenus.options(m))
+            # last line && not last option
+            print(buf, TerminalMenus.CONFIG[:down_arrow])
+        else
+            # non special line
+            print(buf, " ")
+        end
+
+        term_width = REPL.Terminals.width(TerminalMenus.terminal)
+
+        TerminalMenus.writeLine(buf, m, i, i == cursor, term_width)
+
+        # don't print an \r\n on the last line unless there is only one line
+        if m.pagesize == 1 || i != (m.pagesize+m.pageoffset)
+            print(buf, "\r\n")
+        end
+    end
+
+    print(out, String(take!(buf)))
 end
 
 
