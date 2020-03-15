@@ -15,7 +15,7 @@ Base.@kwdef mutable struct SpreadsheetDisplay <: TerminalMenus.AbstractMenu
     column_cursor::Int = 1
 
     # Required TerminalMenus fields
-    pagesize::Int = maxrows + 3
+    pagesize::Int = maxrows + 4
     pageoffset::Int = 0
     # Output when user hits enter
     selected::CellId = (-1,-1)
@@ -84,15 +84,6 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
 
     col_width = 5
 
-    function column_name(i)
-        out = ""
-        while i > 0
-            out *= "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]
-            i -= 26
-        end
-        out
-    end
-
     # Handle fake row for column cursor
     if idx === 1
         print(buf, "Cell Value:")
@@ -101,9 +92,24 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
     elseif idx === 3
         print(buf,
             join(["  ",
-                  (lpad(rpad(column_name(i),2), col_width) for i in 1:ui.maxrows)..., ""], " "))
+                  (lpad(rpad(SpreadsheetApp.column_idx_to_name(i),2), col_width)
+                   for i in 1:ui.maxrows)..., ""], " "))
+    # Handle fake final row for error display
+    elseif idx === ui.pagesize
+        try
+            selected_value = SpreadsheetApp.cell_value(ui.ss, (ui.row_cursor, ui.column_cursor))
+
+            if selected_value isa SpreadsheetApp.UserFacingException
+                print(buf, selected_value.err)
+            elseif selected_value isa Exception
+                print(buf, selected_value)
+            end
+        catch e
+            print(buf, "Error while rendering: $e")
+        end
     else
-        cell_row = [lpad(SpreadsheetApp.cell_value(ui.ss, (row,i)), col_width)  for i in 1:ui.maxcols]
+        cell_row = [lpad(SpreadsheetApp.cell_display_str(ui.ss, (row,i)), col_width)  for i in 1:ui.maxcols]
+
 
         # Display the line
         line = if ui.row_cursor == row
@@ -120,6 +126,7 @@ end
 
 
 function run_ui(ui::SpreadsheetDisplay)
+    TerminalMenus.config(down_arrow = ' ')
     while true
         choice = request("", ui)
         if choice === (-1,-1)
