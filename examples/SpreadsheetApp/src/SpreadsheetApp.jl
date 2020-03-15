@@ -96,7 +96,7 @@ function replace_varnames(ss::Spreadsheet, expr)
             # Might be builtin symbol, like :sum or :+
             var
         else
-            return cell_value(ss, id)
+            return QuoteNode(cell_value(ss, id))
         end
     end
     function walk(e::Expr)
@@ -134,7 +134,12 @@ end
     elseif cell_is_empty(ss, id)
         ""
     else
-        Meta.parse(cell_text(ss, id))
+        try
+            Meta.parse(cell_text(ss, id))
+        catch
+            # If it doesn't parse, treat it as a string! :)
+            cell_text(ss, id)
+        end
     end
 end
 function cell_display_str(ss::Spreadsheet, id::CellId)

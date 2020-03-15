@@ -65,14 +65,14 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
 
     # Handle fake row for column cursor
     if idx === 1
-        print(buf, "Cell Value:")
+        print(buf, "Cell Text:")
     elseif idx === 2
         print(buf, cell_text(ui.ss, (ui.row_cursor, ui.column_cursor)))
     elseif idx === 3
         print(buf,
             join(["  ",
                   (lpad(rpad(SpreadsheetApp.column_idx_to_name(i),2), col_width)
-                   for i in 1:ui.maxrows)..., ""], " "))
+                   for i in 1:ui.maxcols)..., ""], " "))
     # Handle fake final row for error display
     elseif idx === ui.pagesize
         try
