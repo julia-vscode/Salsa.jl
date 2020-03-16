@@ -13,6 +13,7 @@ macros to automatically detect dependencies between julia functions at runtime. 
 creates the necessary dependencies between cells to correctly incrementally recompute
 results.
 
-A demo of the simple Spreadsheet App:
+Here is a demo of the simple Spreadsheet App, showcasing formulas containing arbitrary julia
+code, resolving references to other cells, and interactive editing:
 
 <a href="https://asciinema.org/a/DmXipKlztALrzSF0vnrK86Lle"><img alt="ascii screen cast" src="https://asciinema.org/a/DmXipKlztALrzSF0vnrK86Lle.svg" align="center" width="640" ></a>
