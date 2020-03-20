@@ -1,3 +1,7 @@
+# This module uses (abuses) the TerminalMenus.jl package to create an interactive
+# spreadsheet application user interface. It's not very interesting as far as helping
+# to explain the Salsa.jl package, but having an interactive UI makes this demo much more
+# fun! 😁
 module UI
 
 import REPL
@@ -5,7 +9,7 @@ import REPL
 using ..SpreadsheetApp: SpreadsheetApp, Spreadsheet, CellId, cell_text, set_cell_text!
 
 import TerminalMenus
-import TerminalMenus: request
+using TerminalMenus: request
 
 Base.@kwdef mutable struct SpreadsheetDisplay <: TerminalMenus.AbstractMenu
     # Spreadsheet fields
@@ -37,16 +41,11 @@ TerminalMenus.cancel(ui::SpreadsheetDisplay) = ui.selected = (-1,-1)
 
 function TerminalMenus.header(ui::SpreadsheetDisplay)
     "──────"^ui.maxcols
-#    #"""
-#    #Select a field to recurse into or ↩ to ascend. [q]uit.
-#    #"""
 end
 
 function TerminalMenus.keypress(ui::SpreadsheetDisplay, key::UInt32)
-    #if key == UInt32('w')
-    #    ui.toggle = :warn
-    #    return true
     if key == Int(TerminalMenus.ARROW_RIGHT)
+        # TODO: Allow scrolling infinitely
         ui.column_cursor = min(ui.maxcols, ui.column_cursor + 1)
     elseif key == Int(TerminalMenus.ARROW_LEFT)
         ui.column_cursor = max(1, ui.column_cursor - 1)
@@ -78,7 +77,7 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
         try
             selected_value = SpreadsheetApp.cell_value(ui.ss, (ui.row_cursor, ui.column_cursor))
 
-            if selected_value isa SpreadsheetApp.UserFacingException
+            if selected_value isa SpreadsheetApp.AbstractUserFacingException
                 print(buf, selected_value.err)
             elseif selected_value isa Exception
                 print(buf, selected_value)
