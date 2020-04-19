@@ -503,7 +503,7 @@ macro derived(f)
             cache
         end
 
-        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(args...))
+        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(fullargs...))
             $userfname($(argnames[1]), $(argnames[2:end]...))
         end
 
