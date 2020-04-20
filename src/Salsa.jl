@@ -444,18 +444,17 @@ macro derived(f)
     dict = MacroTools.splitdef(f)
 
     fname = dict[:name]
-    args = dict[:args]
 
-    if length(args) < 1
+    if length(dict[:args]) < 1
         throw(ArgumentError("@derived functions must take a Component as the first argument."))
     end
 
     # _argnames and _argtypes fill in anonymous names for unnamed args (`::Int`) and `Any`
     # for untyped args. `fullargs` will have all args w/ names and types.
-    argnames = _argnames(args)
-    argtypes = _argtypes(args)
+    argnames = _argnames(dict[:args])
+    argtypes = _argtypes(dict[:args])
     dbname = argnames[1]
-    fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i in 1:length(args)]
+    fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i in 1:length(dict[:args])]
 
     # Get the argument types and return types for building the dictionary types.
     # TODO: IS IT okay to eval here? Will function defs always be top-level exprs?
