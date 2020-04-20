@@ -527,16 +527,19 @@ end
 # ----------------------------------
 
 # Allow functions with multiple methods
-Salsa.@derived f(db::AbstractComponent) = 1
-Salsa.@derived f(db::AbstractComponent, arg::Any) = arg
-Salsa.@derived f(db::AbstractComponent, arg::Int) = 10
+# NOTE: Also testing varied arg syntax (`x`, `x::T`, `::T`).
+Salsa.@derived multi_method(db::AbstractComponent) = 1
+Salsa.@derived multi_method(db::AbstractComponent, arg) = arg
+Salsa.@derived multi_method(db::AbstractComponent, arg::Int) = 10
+Salsa.@derived multi_method(db::AbstractComponent, ::Symbol) = "!"
 
 Salsa.@component MultiMethodFunctions begin
 end
 @testset "multiple methods" begin
-    @test f(MultiMethodFunctions()) == 1
-    @test f(MultiMethodFunctions(), 2) == 10
-    @test f(MultiMethodFunctions(), "hi") == "hi"
+    @test multi_method(MultiMethodFunctions()) == 1
+    @test multi_method(MultiMethodFunctions(), 2) == 10
+    @test multi_method(MultiMethodFunctions(), "hi") == "hi"
+    @test multi_method(MultiMethodFunctions(), :bang) == "!"
 end
 
 # ----------------------------------
