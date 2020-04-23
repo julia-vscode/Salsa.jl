@@ -62,11 +62,14 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
 
     col_width = 5
 
+    # Issue a single read transaction to read an entire row of the display.
+    txn = ui.ss.rt
+
     # Handle fake row for column cursor
     if idx === 1
         print(buf, "Cell Text:")
     elseif idx === 2
-        print(buf, cell_text(ui.ss, (ui.row_cursor, ui.column_cursor)))
+        print(buf, cell_text(txn, (ui.row_cursor, ui.column_cursor)))
     elseif idx === 3
         print(buf,
             join(["  ",
@@ -75,7 +78,7 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
     # Handle fake final row for error display
     elseif idx === ui.pagesize
         try
-            selected_value = SpreadsheetApp.cell_value(ui.ss, (ui.row_cursor, ui.column_cursor))
+            selected_value = SpreadsheetApp.cell_value(txn, (ui.row_cursor, ui.column_cursor))
 
             if selected_value isa SpreadsheetApp.AbstractUserFacingException
                 print(buf, selected_value.err)
@@ -86,7 +89,12 @@ function TerminalMenus.writeLine(buf::IOBuffer, ui::SpreadsheetDisplay, idx::Int
             print(buf, "Error while rendering: $e")
         end
     else
-        cell_row = [lpad(SpreadsheetApp.cell_display_str(ui.ss, (row,i)), col_width)  for i in 1:ui.maxcols]
+        # Task Parallelism: Compute each cell independently, in parallel along the row.
+        cell_row = Vector{String}(undef, ui.maxcols)
+        @sync for i in 1:ui.maxcols
+            Threads.@spawn cell_row[$i] =
+                            lpad(SpreadsheetApp.cell_display_str(txn, (row,$i)), col_width)
+        end
 
         # Display the line
         line = if ui.row_cursor == row
