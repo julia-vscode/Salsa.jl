@@ -16,7 +16,7 @@ export @component, @input, @derived, @connect, AbstractComponent, InputScalar, I
 
 import MacroTools
 include("DebugMode.jl")
-import .DebugMode: @debug_mode, DBG
+import .Debug: @debug_mode, @dbg_log_trace
 
 
 const Revision = Int
@@ -328,9 +328,7 @@ function memoized_lookup_derived(component, key::DependencyKey)
                     # At this point (value == nothing) if (and only if) the args are not
                     # in the cache, OR if they are in the cache, but they are no longer valid.
          if value === nothing    # N.B., do not use `isnothing`
-             if get(ENV, "SALSA_TRACE", "0") != "0"
-                 @info "invoking $key"
-             end
+             @dbg_log_trace @info "invoking $key"
              v = invoke_user_function(key.key, key.args...)
                     # NOTE: We use `isequal` for the Early Exit Optimization, since values are required
                     # to be purely immutable (but not necessarily julia `immutable structs`).
@@ -444,17 +442,20 @@ macro derived(f)
     dict = MacroTools.splitdef(f)
 
     fname = dict[:name]
+    args = dict[:args]
 
-    if length(dict[:args]) < 1
+    if length(args) < 1
         throw(ArgumentError("@derived functions must take a Component as the first argument."))
     end
 
     # _argnames and _argtypes fill in anonymous names for unnamed args (`::Int`) and `Any`
-    # for untyped args. `fullargs` will have all args w/ names and types.
-    argnames = _argnames(dict[:args])
-    argtypes = _argtypes(dict[:args])
+    # for untyped args. E.g. Turns `(::Int, _, x, y::Number)` into
+    # `(var"#2#3"::Int, var"#2#4"::Any, x::Any, y::Number)`.
+    argnames = _argnames(args)
+    argtypes = _argtypes(args)
     dbname = argnames[1]
-    fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i in 1:length(dict[:args])]
+    # In all the generated code, we'll use `args` w/ the full names and types.
+    args = [Expr(:(::), argnames[i], argtypes[i]) for i in 1:length(args)]
 
     # Get the argument types and return types for building the dictionary types.
     # TODO: IS IT okay to eval here? Will function defs always be top-level exprs?
@@ -477,7 +478,7 @@ macro derived(f)
 
     # Construct the originally named, visible function
     dict[:name] = fname
-    dict[:args] = fullargs
+    dict[:args] = args  # Switch to the fully typed and named arguments.
     dict[:body] = quote
         key = $DependencyKey(key = $derived_key, args = ($(argnames...),))
         $memoized_lookup_derived($(argnames[1]), key).value
@@ -502,7 +503,7 @@ macro derived(f)
             cache
         end
 
-        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(fullargs...))
+        function $(@__MODULE__()).invoke_user_function(::$derived_key_t, $(args...))
             $userfname($(argnames[1]), $(argnames[2:end]...))
         end
 
@@ -746,7 +747,12 @@ end
 
 function Base.get!(default::Function, input::InputMap{K,V}, key::K) where V where K
     assert_safe(input)
-    get!(() -> InputValue{V}(default(), input.runtime.current_revision), input.v, key).value
+    return (get!(input.v, key) do
+        value = default()
+        @dbg_log_trace @info "Setting input on $(typeof(input)): $key => $value"
+        input.runtime.current_revision += 1
+        InputValue{V}(value, input.runtime.current_revision)
+    end).value
 end
 
 # The argument `value` can be anything that can be converted to type `T`. We omit the
@@ -761,6 +767,7 @@ function Base.setindex!(input::InputScalar{T}, value) where {T}
         return
     end
     assert_safe(input)
+    @dbg_log_trace @info "Setting input on $(typeof(input)): $value"
     input.runtime.current_revision += 1
     input.v[] = Some(InputValue{T}(value, input.runtime.current_revision))
     input
@@ -775,6 +782,7 @@ function Base.setindex!(input::InputMap{K,V}, value, key) where {K,V}
         return
     end
     assert_safe(input)
+    @dbg_log_trace @info "Setting input on $(typeof(input)): $key => $value"
     input.runtime.current_revision += 1
     input.v[key] = InputValue{V}(value, input.runtime.current_revision)
     input
@@ -782,11 +790,13 @@ end
 
 function Base.delete!(input::InputMap, key)
     assert_safe(input)
+    @dbg_log_trace @info "Deleting input on $input: $key"
     input.runtime.current_revision += 1
     delete!(input.v, key)
     input
 end
 function Base.empty!(input :: InputMap)
+    @dbg_log_trace @info "Emptying input $input"
     input.runtime.current_revision += 1
     empty!(input.v)
     input
@@ -814,7 +824,7 @@ function memoized_lookup_input_helper(runtime::Runtime, input::InputTypes, key::
     local value
     trace_with_key(runtime, key) do
         value = getindex(input.v, call_args...)
-        end # do block
+    end # do block
     return value
 end
 
@@ -903,5 +913,8 @@ struct ProvideDecl
     input_type::Type{<:Union{InputTypes, AbstractComponent}}
     decl::Expr
 end
+
+# Offline / Debug includes (At the end so they can access the full package)
+include("inspect.jl")  # For offline debugging/inspecting a Salsa state.
 
 end  # module Salsa

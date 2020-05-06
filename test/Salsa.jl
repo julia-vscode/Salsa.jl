@@ -494,8 +494,21 @@ end
 
         # Now update the map and verify that the values do indeed update
         db.map[2] = 20
-        # NOTE: keys(Salsa.Map) is currently not supported
         @test sort(collect(values(db.map))) == [10, 20]
+    end
+
+    @testset "get!" begin
+        db = MapAggregatesDB()
+
+        get!(()->2, db.map, 1)
+        @test db.map[1] == 2
+
+        get!(()->3, db.map, 1)
+        @test db.map[1] == 2
+
+        delete!(db.map, 1)
+        get!(()->3, db.map, 1)
+        @test db.map[1] == 3
     end
 end
 
