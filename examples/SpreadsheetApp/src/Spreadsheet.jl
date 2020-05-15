@@ -56,11 +56,12 @@ const CellId = Tuple{Int,Int}
     #      performance, you will want to keep these inputs _separate_ ("normalized"), so you
     #      keep one manifest that contains the keys to all the other maps.
     # NOTE: Storing Immutable Values
-    # For correctness, you should only use _immutable values_ in Salsa. To represent an
-    # immutable Set, here we declare valid_cells to store any variadic tuple of CellIds.
-    # We could also have used a proper immutable colelction datastructure, such as those
-    # provided by https://github.com/JuliaCollections/FunctionalCollections.jl.
-    @input valid_cells :: InputScalar{NTuple{<:Any, CellId}}
+    # For correctness, you should only use _immutable values_ in Salsa. However, for now
+    # for performance here we use a mutable Set. It would be better to switch to an immutable
+    # Set once there is better support for immutable collections. For example, we could use a
+    # proper immutable collection datastructure, such as those provided by
+    # https://github.com/JuliaCollections/FunctionalCollections.jl.
+    @input valid_cells :: InputScalar{Set{CellId}}
     @input cell_text :: InputMap{CellId, String}
 
     # The default Constructor initializes the manifest to be empty (a common part of the
@@ -68,7 +69,7 @@ const CellId = Tuple{Int,Int}
     function Spreadsheet()
         # Salsa.create() initializes the Spreadsheet with a new empty Runtime correctly.
         ss = Salsa.create(Spreadsheet)
-        ss.valid_cells[] = ()
+        ss.valid_cells[] = Set{CellId}()
         ss
     end
 end
@@ -76,7 +77,9 @@ end
 # The manifest and the attributes (valid_cells and cell_text) must be maintained together,
 # so we should always use this Setter function to update the cell text.
 function set_cell_text!(ss::Spreadsheet, id::CellId, text::String)
-    ss.valid_cells[] = (ss.valid_cells[]..., id)
+    new_valid_cells = copy(ss.valid_cells[])
+    push!(new_valid_cells, id)
+    ss.valid_cells[] = new_valid_cells
     ss.cell_text[id] = text
 end
 
