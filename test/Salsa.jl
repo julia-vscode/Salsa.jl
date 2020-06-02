@@ -156,8 +156,8 @@ end
         # Oh man, it might take a long time to add all those ranges. Better
         # spawn some tasks to make it faster!
         @sync begin
-            tasks = [Threads.@spawn sum_range(rt, $name)
-                     for name in range_names(rt)]
+            tasks = [Threads.@spawn sum_range(rt, name)
+                    for name in range_names(rt)]
             return sum(fetch(t)::Int for t in tasks)
         end
     end
