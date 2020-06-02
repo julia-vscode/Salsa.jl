@@ -5,9 +5,8 @@
 A framework for on-demand, incremental computation via memoization, inspired by Rust lang's
 [salsa-rs/salsa](https://github.com/salsa-rs/salsa).
 
-- `@component`
 - `@derived`
-- `@input`
+- `@declare_input`
 
 ## Credits
 This package was closely modelled off of the Rust
@@ -22,4 +21,4 @@ that make it easy by automatically tracking dependencies between computations.
 If you are familiar with Salsa-rs, you'll see many things that are familiar and a few
 slightly more generic, and moved away from the database-oriented naming:
 - **derived queries** => **`@derived` functions**
-- **query groups** => **`@component`s**
+- **query group** => **`Runtime`**
