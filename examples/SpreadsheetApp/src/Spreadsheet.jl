@@ -77,10 +77,19 @@ end
 # The manifest and the attributes (valid_cells and cell_text) must be maintained together,
 # so we should always use this Setter function to update the cell text.
 function set_cell_text!(ss::Spreadsheet, id::CellId, text::String)
-    new_valid_cells = copy(ss.valid_cells[])
-    push!(new_valid_cells, id)
-    ss.valid_cells[] = new_valid_cells
-    ss.cell_text[id] = text
+    if isempty(text)
+        current_valid_cells = ss.valid_cells[]
+        if id in current_valid_cells
+            delete!(ss.cell_text, id)
+            # Invalidate the cell
+            ss.valid_cells[] = filter(x->x!=id, current_valid_cells)
+        end
+    else
+        new_valid_cells = copy(ss.valid_cells[])
+        push!(new_valid_cells, id)
+        ss.valid_cells[] = new_valid_cells
+        ss.cell_text[id] = text
+    end
 end
 
 
