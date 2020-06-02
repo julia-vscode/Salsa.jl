@@ -138,7 +138,7 @@ end
 # does not specify any custom context.
 Runtime{CT}(ctx::CT = CT()) where {CT} = Runtime{CT,DefaultStorage}(ctx, DefaultStorage())
 Runtime(st) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st)
-Runtime() = Runtime(DefaultStorage())
+Runtime() = Runtime(DefaultStorage())  # Equivalent to DefaultRuntime()
 
 struct EmptyContext end
 
@@ -828,7 +828,7 @@ const _TracingRuntimeWithStorage{ST,CT} = _TracingRuntime{CT,ST}
 
 
 include("default_storage.jl")
-using ._DefaultSalsaStorage: DefaultStorage
+using ._DefaultSalsaStorage: DefaultStorage, DefaultRuntime
 include("inspect.jl")
 
 # Simpler print function for default Runtime implementation.

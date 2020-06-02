@@ -70,7 +70,7 @@ const CellId = Tuple{Int,Int}
 # and initializes it with valid initial values. A new instance of a Spreadsheet
 # will have a clean salsa state, with nothing in the inputs and no derived values cached.
 struct Spreadsheet
-    rt::Runtime{Salsa.DefaultStorage}
+    rt::Salsa.DefaultRuntime
     # The default Constructor initializes the manifest to be empty (a common part of the
     # "Manifest Pattern").
     function Spreadsheet()

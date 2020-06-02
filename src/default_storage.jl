@@ -75,6 +75,8 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
     end
 end
 
+const DefaultRuntime = Salsa.Runtime{Salsa.EmptyContext,DefaultStorage}
+
 function Base.show(io::IO, storage::DefaultStorage)
     current_revision = lock(storage.lock) do
         storage.current_revision
