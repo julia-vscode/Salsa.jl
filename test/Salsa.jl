@@ -49,6 +49,7 @@ using Salsa: Runtime, InputKey, DependencyKey
 
     @test timesed(s, 2,2) === 12
 end
+
 @testset "Early Exit Optimization" begin
     s = Runtime()
     @declare_input x(rt)::Int
@@ -57,29 +58,45 @@ end
     set_x!(s, 0)
     set_y!(s, 1)
 
+    # Track when derived functions are called.
+    ftrace = Set([])
+
     @derived function add_em(s)
+        push!(ftrace, add_em)
         x(s) + y(s)
     end
     @derived function square_it(s)
+        push!(ftrace, square_it)
         add_em(s) * add_em(s)
     end
+    @derived function negate_it(s)
+        push!(ftrace, negate_it)
+        -square_it(s)
+    end
 
-    square_it(s)
+    # First call runs all functions
+    empty!(ftrace)
+    @assert negate_it(s) == -1
+    @test ftrace == Set([add_em, square_it, negate_it])
 
-    s = Runtime()
-    set_x!(s, 3)
-    set_y!(s, 4)
-    square_it(s)
+    # Second call gets cached values, and re-runs nothing
+    empty!(ftrace)
+    @assert negate_it(s) == -1
+    @test ftrace == Set([])
 
-    s = Runtime()
-    set_x!(s, 3)
-    set_y!(s, 4)
-    square_it(s)
+    # Setting same values also reruns nothing
+    set_x!(s, x(s))
+    set_y!(s, y(s))
+    empty!(ftrace)
+    @assert negate_it(s) == -1
+    @test ftrace == Set([])
 
-    s = Runtime()
-    set_x!(s, 4)
-    set_y!(s, 3)
-    square_it(s)
+    # Setting new values with same sum exits after add_em
+    set_x!(s, x(s) + 1)
+    set_y!(s, y(s) - 1)
+    empty!(ftrace)
+    @assert negate_it(s) == -1
+    @test ftrace == Set([add_em])
 end
 
 
@@ -122,6 +139,16 @@ end
     @test b(rt, 1) == 10
 end
 
+
+@testset "inputs and derived functions support docstrings" begin
+    @test @macroexpand(begin
+        """ My Input """
+        Salsa.@declare_input manifest(rt)::Set{Int}
+
+        """ My derived function """
+        Salsa.@derived function foo(db) end
+    end) isa Expr
+end
 
 struct LoggingContext
     io::IOBuffer
