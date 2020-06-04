@@ -139,7 +139,6 @@ end
     @test b(rt, 1) == 10
 end
 
-
 @testset "inputs and derived functions support docstrings" begin
     @test @macroexpand(begin
         """ My Input """
@@ -148,6 +147,88 @@ end
         """ My derived function """
         Salsa.@derived function foo(db) end
     end) isa Expr
+end
+
+module ErrorHandlingTests
+    using Salsa
+
+    @declare_input val(rt) :: Int
+    @declare_input map(rt, key::Int) :: Int
+
+    Salsa.@derived function square_root(rt)
+        sqrt(val(rt))
+    end
+    Salsa.@derived function get_val(rt, key)
+        map(rt, key)
+    end
+    Salsa.@derived function val_times_sqrt(rt, key)
+        get_val(rt, key) * square_root(rt)
+    end
+end
+
+@testset "Robust to derived functions that throw errors" begin
+    db = Runtime()
+
+    # Setting a value that should work as expected
+    ErrorHandlingTests.set_val!(db, 1)
+    @test ErrorHandlingTests.square_root(db) == 1
+
+    # Setting a value that will cause square_root() to throw an Exception
+    ErrorHandlingTests.set_val!(db, -1)
+    @test_throws DomainError ErrorHandlingTests.square_root(db)
+
+    # Now test that it's recovered gracefully from the error, and we can still use the DB
+    ErrorHandlingTests.set_val!(db, 1)
+    @test ErrorHandlingTests.square_root(db) == 1
+end
+
+@testset "Multi-level derived functions that throw errors #1180" begin
+    db = Runtime()
+
+    # Cause `square_root()` to throw an exeception, when being called from within another
+    # derived function.
+    ErrorHandlingTests.set_val!(db, -1)
+    ErrorHandlingTests.set_map!(db, 1, 2)
+    # Attempts 2 * sqrt(-1), and throws an error
+    @test_throws DomainError ErrorHandlingTests.val_times_sqrt(db, 1)
+
+    # Now test that it's recovered gracefully from the error, and we can still use the DB
+    ErrorHandlingTests.set_val!(db, 1)
+    @test ErrorHandlingTests.square_root(db) == 1
+    @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
+
+    # Now check that we also recover from KeyErrors when reading from a map:
+    # Throw error:
+    @test_throws KeyError ErrorHandlingTests.val_times_sqrt(db, 100)  # No key 100
+    # But this call still works:
+    @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
+end
+
+@testset "Key Deletions" begin
+    @declare_input all_student_ids(rt)::Set{Int}  # TODO: Use an immutable type
+    @declare_input student_grade(rt, id::Int)::Float64
+
+    @derived function average_grade(state)
+        tot = sum(student_grade(state, id) for id in all_student_ids(state))
+        tot / length(all_student_ids(state))
+    end
+
+    rt = Runtime()
+
+    set_all_student_ids!(rt, Set([1, 2]))
+    set_student_grade!(rt, 1, 4.0)
+    set_student_grade!(rt, 2, 2.0)
+    @test average_grade(rt) == 3
+
+    # Delete student `1`
+    delete_student_grade!(rt, 1)
+    set_all_student_ids!(rt, Set([2]))
+    @test average_grade(rt) == 2.0
+
+    # <Test that Salsa correctly throws an error given a programming bug>
+    # Delete student only from student_grade but leave in all_student_ids (a programming error)
+    delete_student_grade!(rt, 2)
+    @test_throws KeyError average_grade(rt)
 end
 
 struct LoggingContext
