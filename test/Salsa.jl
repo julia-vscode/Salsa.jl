@@ -20,7 +20,7 @@ using Salsa: Runtime, InputKey, DependencyKey
     @test f1(s, 0) === 1
 
     # Works with named or unnamed arguments ✔︎
-    @declare_input mymap(_, ::String, ::Int) :: String
+    @declare_input mymap(_, ::String, ::Int) :: Int
     @declare_input mymap(rt, x::String, y::Int) :: Int
     @declare_input mymap(rt::Runtime, x::String, y::Int) :: Int
 
@@ -137,6 +137,23 @@ end
 
     @test a(rt, 1) == "hi"
     @test b(rt, 1) == 10
+end
+@testset "Multiple methods" begin
+    @declare_input x(rt)::Int
+    @declare_input x(rt, x)::Any
+    @declare_input x(rt, x::Int)::Int
+    @declare_input x(rt, ::Int, ::String)::String
+
+    rt = Runtime()
+    set_x!(rt, 1)
+    set_x!(rt, "hi", "hey")
+    set_x!(rt, 1, 2)
+    set_x!(rt, 1, "hi", "ho")
+
+    @test x(rt) == 1
+    @test x(rt, "hi") == "hey"
+    @test x(rt, 1) == 2
+    @test x(rt, 1, "hi") == "ho"
 end
 
 @testset "inputs and derived functions support docstrings" begin
