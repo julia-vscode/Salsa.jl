@@ -1,4 +1,4 @@
-module MiniSalsaTest
+module SalsaTest
 
 # Inline debugging tests
 
@@ -380,4 +380,4 @@ end
     @test isempty(Test.detect_unbound_args(Salsa.Debug, recursive=false))
 end
 
-end # MiniSalsaTest
+end # SalsaTest
