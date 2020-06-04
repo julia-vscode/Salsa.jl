@@ -90,9 +90,7 @@ function set_cell_text!(salsa::Runtime, id::CellId, text::String)
     if isempty(text)
         current_valid_cells = valid_cells(salsa)
         if id in current_valid_cells
-            # TODO: once new Salsa supports delete! this should delete the old value.
-            # For now, just overwrite it with the empty text.
-            set_stored_cell_text!(salsa, id, "")
+            delete_stored_cell_text!(salsa, id)
             # Invalidate the cell
             set_valid_cells!(salsa, filter(x->x!=id, current_valid_cells))
         end
