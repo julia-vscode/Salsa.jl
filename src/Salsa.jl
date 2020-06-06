@@ -393,7 +393,7 @@ function get_free_trace_id()::TraceId
     trace_freelist = tls_trace_freelist()
     trace_pool = tls_trace_pool()
     if isempty(trace_freelist)
-        @debug_mode @info "DOUBLING MINISALSA TRACE POOL ON THREAD $(Threads.threadid())"
+        @debug_mode @info "DOUBLING SALSA TRACE POOL ON THREAD $(Threads.threadid())"
         old_size = length(tls_trace_pool())
         num_new_traces = old_size # Double the pool
         @debug_mode @assert num_new_traces > 0
