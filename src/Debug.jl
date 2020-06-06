@@ -27,32 +27,33 @@ end
 if static_debug_mode
     # Runtime debug mode controls
     function enable_debug()
-        global _DBG = true
+        _DBG[] = true
     end
     function disable_debug()
-        global _DBG = false
+        _DBG[] = false
     end
-    debug_enabled() = _DBG
-    _DBG = true
+    debug_enabled() = _DBG[]
+    const _DBG = Ref(true)
 
 
     # Runtime trace logging controls
     function enable_trace_logging()
-        global _tracing = true
+        _tracing[] = true
     end
     function disable_trace_logging()
-        global _tracing = false
+        _tracing[] = false
     end
-    trace_logging_enabled() = _tracing
-    _tracing = false
+    trace_logging_enabled() = _tracing[]
+    const _tracing = Ref(false)
 else
     # Runtime Debugging is disabled.
-    _emit_debug_warning() = 
+    function _emit_debug_warning()
         @warn """
-        Cannot enable runtime debug statements because debug is disabled statically.
-        To enable, reload Salsa after setting `static_debug_mode = true` in:
-        $(@__FILE__)
-        """
+            Cannot enable runtime debug statements because debug is disabled statically.
+            To enable, reload Salsa after setting `static_debug_mode = true` in:
+            $(@__FILE__)
+            """
+    end
 
     enable_debug() = _emit_debug_warning()
     disable_debug() = _emit_debug_warning()

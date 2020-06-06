@@ -37,61 +37,70 @@ using Salsa
 # derived functions, below, so it's good to use the simplest possible identifier.
 const CellId = Tuple{Int,Int}
 
-# By marking this type as a `@component`, Spreadsheet instances internally store the
-# pointer to the current Salsa Runtime, which maintains all the state from the derived
-# computations. So a single Spreadsheet holds both the user-provided inputs, _and_ all the
-# cached derived computations that build on those inputs.
-@component Spreadsheet begin
-    # NOTE: The "Manifest Pattern"
-    # Notice that we have a single input that stores all the cells that the user has
-    # entered, and a _separate_ input that maps from those cell IDs to their text values.
-    # This is called the "manifest pattern," because you have one input that acts as the
-    # manifest (valid_cells), containing all the keys to the other map input(s).
-    # This is important for two reasons:
-    #   1. This is a syntactic requirement, because Salsa does not track changes to the
-    #      keys in a map, it only tracks changes to _values_.
-    #   2. There might be many separate things that you want to record for a given Cell:
-    #      Currently, we store only its text, but in the future we may also want to store
-    #      its color, it's formatting (bold, italics, ...), etc. For the best incremental
-    #      performance, you will want to keep these inputs _separate_ ("normalized"), so you
-    #      keep one manifest that contains the keys to all the other maps.
-    # NOTE: Storing Immutable Values
-    # For correctness, you should only use _immutable values_ in Salsa. However, for now
-    # for performance here we use a mutable Set. It would be better to switch to an immutable
-    # Set once there is better support for immutable collections. For example, we could use a
-    # proper immutable collection datastructure, such as those provided by
-    # https://github.com/JuliaCollections/FunctionalCollections.jl.
-    @input valid_cells :: InputScalar{Set{CellId}}
-    @input cell_text :: InputMap{CellId, String}
+# --- Salsa Inputs ------------------------------------------------------------------------
+# Below we declare the Salsa inputs that we will use for our spreadsheet app. These inputs
+# store values that come from users, and are the only part of the Salsa state that we can
+# manipulate directly. When we make changes to the cells' source text, those changes will
+# ripple through the Salsa derived functions that ultimately compute the displayed values.
 
+# NOTE: The "Manifest Pattern"
+# Notice that we have a single input that stores all the cells that the user has
+# entered, and a _separate_ input that maps from those cell IDs to their text values.
+# This is called the "manifest pattern," because you have one input that acts as the
+# manifest (valid_cells), containing all the keys to the other map input(s).
+# This is important for two reasons:
+#   1. This is a syntactic requirement, because Salsa does not track changes to the
+#      keys in a map, it only tracks changes to _values_.
+#   2. There might be many separate things that you want to record for a given Cell:
+#      Currently, we store only its text, but in the future we may also want to store
+#      its color, it's formatting (bold, italics, ...), etc. For the best incremental
+#      performance, you will want to keep these inputs _separate_ ("normalized"), so you
+#      keep one manifest that contains the keys to all the other maps.
+# NOTE: Storing Immutable Values
+# For correctness, you should only use _immutable values_ in Salsa. However, for now
+# for performance here we use a mutable Set. It would be better to switch to an immutable
+# Set once there is better support for immutable collections. For example, we could use a
+# proper immutable collection datastructure, such as those provided by
+# https://github.com/JuliaCollections/FunctionalCollections.jl.
+@declare_input valid_cells(rt) :: Set{CellId}
+@declare_input stored_cell_text(rt, cid::CellId) :: String
+
+
+# Create a struct to represent our Salsa state, which encapsulates the Salsa state,
+# and initializes it with valid initial values. A new instance of a Spreadsheet
+# will have a clean salsa state, with nothing in the inputs and no derived values cached.
+struct Spreadsheet
+    rt::Salsa.DefaultRuntime
     # The default Constructor initializes the manifest to be empty (a common part of the
     # "Manifest Pattern").
     function Spreadsheet()
-        # Salsa.create() initializes the Spreadsheet with a new empty Runtime correctly.
-        ss = Salsa.create(Spreadsheet)
-        ss.valid_cells[] = Set{CellId}()
-        ss
+        rt = Runtime()
+        set_valid_cells!(rt, Set{CellId}())
+        new(rt)
     end
+end
+
+function set_cell_text!(ss::Spreadsheet, args...)
+    set_cell_text!(ss.rt, args...)
 end
 
 # The manifest and the attributes (valid_cells and cell_text) must be maintained together,
 # so we should always use this Setter function to update the cell text.
-function set_cell_text!(ss::Spreadsheet, id::CellId, text::String)
+function set_cell_text!(salsa::Runtime, id::CellId, text::String)
     if isempty(text)
-        current_valid_cells = ss.valid_cells[]
+        current_valid_cells = valid_cells(salsa)
         if id in current_valid_cells
-            delete!(ss.cell_text, id)
+            delete_stored_cell_text!(salsa, id)
             # Invalidate the cell
-            ss.valid_cells[] = filter(x->x!=id, current_valid_cells)
+            set_valid_cells!(salsa, filter(x->x!=id, current_valid_cells))
         end
     else
-        new_valid_cells = copy(ss.valid_cells[])
+        new_valid_cells = copy(valid_cells(salsa))
         push!(new_valid_cells, id)
-        ss.valid_cells[] = new_valid_cells
-        ss.cell_text[id] = text
+        set_valid_cells!(salsa, new_valid_cells)
+        set_stored_cell_text!(salsa, id, text)
     end
 end
-
 
 # This is the first derived function we've seen. It acts like a filter, which generates
 # empty text ("") for strings that the user hasn't set directly, which allows us to use a
@@ -106,9 +115,9 @@ end
 # function, since it's body is very cheap, but we did so for explanation purposes. You will
 # need to make trade-off decisions between cache size and cpu performance, motivated by
 # running performance measurements. This tuning is common to working with Salsa.
-@derived function cell_text(ss::Spreadsheet, id::CellId)::String
-    if cell_is_set(ss, id)
-        ss.cell_text[id]
+@derived function cell_text(rt::Runtime, id::CellId)::String
+    if cell_is_set(rt, id)
+        stored_cell_text(rt,id)
     else
         ""
     end
@@ -124,8 +133,7 @@ end
 # mean that whenever you add or remove a CellId, _all the values stored in the `cell_text()`
 # function would be invalidated, and would have to rerun. This barrier function prevents
 # that.
-@derived cell_is_set(ss::Spreadsheet, id::CellId)::Bool = id in ss.valid_cells[]
-
+@derived cell_is_set(rt::Runtime, id::CellId)::Bool = id in valid_cells(rt)
 
 # --- Cell Type Computations -------------------------------------------------------------
 # Here we have some derived functions which determine what type of cell we have, based
@@ -141,10 +149,10 @@ end
 # Notice also that we include return-type annotations on these functions, because Salsa
 # uses them to construct strongly-typed Dictionaries for storing the cached values.
 
-@derived cell_is_empty(ss::Spreadsheet, id::CellId)::Bool = isempty(cell_text(ss, id))
+@derived cell_is_empty(rt::Runtime, id::CellId)::Bool = isempty(cell_text(rt, id))
 
-@derived function cell_is_formula(ss::Spreadsheet, id::CellId)::Bool
-    text = cell_text(ss, id)
+@derived function cell_is_formula(rt::Runtime, id::CellId)::Bool
+    text = cell_text(rt, id)
     !isempty(text) && first(text) === '='
 end
 
@@ -170,20 +178,20 @@ Base.print(io::IO, err::UserError) = print(io, err.err)
 # it evaluates the formula to compute a value.
 # Notice that this function can be _recursive_ thanks to evaluating formulas:
 #  - The call to `replace_varnames` will find valid `CellId`s in the user's expression,
-#    and recursively call `call_value(ss, var_id)` to compute _those_ values. The cached
+#    and recursively call `call_value(rt, var_id)` to compute _those_ values. The cached
 #    values from any intermediate computations we've written above will be automatically
 #    reused.
 #  - Salsa will dynamically track the dependencies between the calls to `cell_value()`,
 #    which automatically provides the dependencies between cells, based on the user-provided
 #    values. Whenever formulas change, they'll be recomputed and the dependencies will be
 #    automatically updated.
-@derived function cell_value(ss::Spreadsheet, id::CellId)::Any
-    if cell_is_empty(ss, id)
+@derived function cell_value(rt::Runtime, id::CellId)::Any
+    if cell_is_empty(rt, id)
         ""
-    elseif cell_is_formula(ss, id)
+    elseif cell_is_formula(rt, id)
         try
-            expr = Meta.parse(cell_text(ss, id)[2:end])
-            expr = replace_varnames(ss, expr)
+            expr = Meta.parse(cell_text(rt, id)[2:end])
+            expr = replace_varnames(rt, expr)
             Meta.eval(expr)
         catch e
             if e isa AbstractUserFacingException
@@ -196,15 +204,15 @@ Base.print(io::IO, err::UserError) = print(io, err.err)
         end
     else
         try
-            Meta.parse(cell_text(ss, id))
+            Meta.parse(cell_text(rt, id))
         catch
             # If it doesn't parse, treat it as a string! :)
-            cell_text(ss, id)
+            cell_text(rt, id)
         end
     end
 end
 
-function replace_varnames(ss::Spreadsheet, expr)
+function replace_varnames(rt::Runtime, expr)
     # Recursively walk through the expression replacing references to cell ids and ranges
     # with their values. The recursive walk!() function is defined below and called on
     # `expr` at the very end.
@@ -217,10 +225,10 @@ function replace_varnames(ss::Spreadsheet, expr)
             # If it's not a cell id, we assume it's a builtin symbol, like :sum or :+
             var
         else
-            # NOTE: Here is the recursive call to cell_value(ss, var_id). Without any
+            # NOTE: Here is the recursive call to cell_value(rt, var_id). Without any
             # explicit work on our part, this creates a dependency from the current CellId
             # being computed to the
-            return QuoteNode(cell_value(ss, var_id))
+            return QuoteNode(cell_value(rt, var_id))
         end
     end
     # Convert Range expressions containing variable names :(A1:B1) to a 2D matrix of the
@@ -231,9 +239,10 @@ function replace_varnames(ss::Spreadsheet, expr)
             r_start = cell_id_from_name(e.args[2])
             r_end = cell_id_from_name(e.args[3])
             # Return a 2D Matrix of the values
-            [cell_value(ss, (r,c))
+            tasks = Task[Threads.@spawn cell_value(rt, (r,c))
              for r in r_start[1]:r_end[1], c in r_start[2]:r_end[2]
             ]
+            map(fetch, tasks)
         else
             # Recursive walk on all elements of the Expr
             Expr(e.head, walk!.(e.args)...)
@@ -252,9 +261,9 @@ end
 # The final missing piece of our spreadsheet app is in the UI.jl file, where the display
 # functions loop over the entire range of the spreadsheet currently in-view from the UI, and
 # call this function on each cell.
-@derived function cell_display_str(ss::Spreadsheet, id::CellId)::String
+@derived function cell_display_str(rt::Runtime, id::CellId)::String
     try
-        v = cell_value(ss, id)
+        v = cell_value(rt, id)
         if v isa Exception
             "#ERR#"
         else

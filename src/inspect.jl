@@ -1,11 +1,12 @@
-module InspectSalsa
-using Salsa
+module Inspect
+using ..Salsa
+using .Salsa._DefaultSalsaStorage: DefaultStorage
 
-# Crude code to dump a .dot (graphviz) version of the Arroyo Node tree.
+# Crude code to dump a .dot (graphviz) version of the Salsa Node tree.
 # For debugging / illustration purposes - not intended to be reachable from production
 # code.
-function dump_graph(c::Salsa.AbstractComponent; module_boxes=false)
-    println(build_graph(c; module_boxes=module_boxes))
+function dump_graph(rt::Runtime; module_boxes=false)
+    println(build_graph(rt; module_boxes=module_boxes))
 end
 
 # There is no IdSet in julia, so we build our own from IdDict.
@@ -19,8 +20,7 @@ end
 Base.in(k, s::_IdSet) = haskey(s.d, k)
 Base.push!(s::_IdSet, k) = s.d[k] = nothing
 
-function build_graph(c::Salsa.AbstractComponent; module_boxes=false)
-    rt = Salsa.get_runtime(c)
+function build_graph(rt::Salsa.Runtime; module_boxes=false)
     io = IOBuffer()
     println(io, """digraph G {""")
     println(io, """edge [dir="back"];""")
@@ -29,7 +29,7 @@ function build_graph(c::Salsa.AbstractComponent; module_boxes=false)
     edges = Dict{Pair, Int}()
     inputs = Dict{Any, String}()  # Note, there might be duplicate strings, Any must be the key
 
-    _build_graph(io, c, seen, modules_map, edges, inputs)
+    _build_graph(io, rt.storage, seen, modules_map, edges, inputs)
 
     if module_boxes
         for (m,keys) in modules_map
@@ -64,7 +64,7 @@ function build_graph(c::Salsa.AbstractComponent; module_boxes=false)
         println(io, "}")
     end
 
-    max_count = maximum(values(edges))
+    max_count = length(edges) == 0 ? 0 : maximum(values(edges))
     maxwidth = 10
     for ((a,b), count) in edges
         normwidth = 1 + maxwidth * (count / max_count)
@@ -75,51 +75,52 @@ function build_graph(c::Salsa.AbstractComponent; module_boxes=false)
     return String(take!(io))
 end
 
-function _build_graph(io::IO, c::Salsa.AbstractComponent, seen::_IdSet, modules_map::Dict, edges::Dict, inputs::Dict)
-    rt = c.runtime
-    m = typeof(c).name.module
-    for fieldname in fieldnames(typeof(c))
-        f = getfield(c, fieldname)
-        if f in seen
-            continue
-        else
-            push!(seen, f)
-        end
-        if f isa Salsa.AbstractComponent
-            @show typeof(f)
-            _build_graph(io, f, seen, modules_map, edges, inputs)
-        elseif f isa Salsa.InputTypes
-            key = Salsa.InputKey(f)
-            inputs[key] = "@input: $(fieldname)"
-            push!(get!(modules_map, m, Set([])), key)
-        end
+function _build_graph(io::IO, st::DefaultStorage, seen::_IdSet, modules_map::Dict, out_edges::Dict, out_inputs::Dict)
+    for ((F,k),v) in st.inputs_map
+        m = F.name.module
+        out_inputs[F] = "@input $(nameof(F.instance))"
+        push!(get!(modules_map, m, Set([])), F)
     end
 
-    for (derived_key,derived_map) in rt.derived_function_maps
-        _build_graph(io, rt, derived_key, derived_map, seen, modules_map, edges)
+    for (derived_key,derived_map) in st.derived_function_maps
+        _build_graph(io, st, derived_key, derived_map, seen, modules_map, out_edges)
     end
 end
 
-function vertex_name(c::Any)::String
-    return "v$(objectid(c))"
+function vertex_name(::Salsa.InputKey{F}) where F
+    return vertex_name(F)
+end
+function vertex_name(x::Any)::String
+    return "v$(objectid(x))"
 end
 
-function _build_graph(io, rt::Salsa.Runtime, derived_key::Salsa.DerivedKey{F,TT}, derived_map::Dict,
+function _build_graph(io, st::DefaultStorage, derived_key::Salsa.DerivedKey{F,TT}, derived_map::Dict,
      seen::_IdSet{Any}, modules_map::Dict{Module,Set}, edges::Dict{Pair, Int}) where {F,TT}
     in(derived_key, seen) && return
     push!(seen, derived_key)
     m = methods(F.instance).mt.module
     push!(get!(modules_map, m, Set([])), derived_key)
-    println(io, "$(vertex_name(derived_key)) [shape=rect,label=\"$(derived_key)\"]")
-    #println(io, "$(vertex_name(derived_key)) [label=\"$(derived_key)\"]")
+    key_str = _derived_key_as_call_str(derived_key)
+    println(io, "$(vertex_name(derived_key)) [shape=rect,label=\"$key_str\"]")
     for (k,v) in derived_map
         for d in v.dependencies
-            edge = (derived_key) => (d.key) 
+            edge = (derived_key) => (d.key)
             count = get!(edges, edge, 0) + 1
             edges[edge] = count
         end
     end
     #_build_graph(io, s.leaf_node, seen)
+end
+
+function _derived_key_as_call_str(key::Salsa.DerivedKey{F,TT})::String where {F,TT}
+    f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
+    argsexprs = [
+        :rt,
+        (Expr(:(::), fieldtype(TT, i)) for i = 1:fieldcount(TT))...,
+    ]
+    # Display f in a copy/paste executable way, by exploiting Expr printing.
+    f_str = string(:(($f,)))[2:end-2]  # (wraps f name in var"" if needed)
+    return "$f_str($(join(argsexprs, ", ")))"
 end
 
 end # module
