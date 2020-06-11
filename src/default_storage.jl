@@ -390,4 +390,7 @@ function Salsa.delete_input!(
     end
 end
 
+function Salsa.new_epoch!(runtime::Salsa.Runtime{DefaultStorage})
+end
+
 end  # module
