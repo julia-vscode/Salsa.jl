@@ -656,12 +656,12 @@ logic, that reuses the previously computed value to compute the next value more 
 """
 function previous_output(rt::Salsa._TracingRuntime)
     dependency_key = get_trace(rt.immediate_dependencies_id).call_stack.dp
-    maybe_previous_value = _previous_output_internal(rt, dependency_key)
-    if maybe_previous_value === nothing
-        return nothing
-    else
-        return _unwrap_salsa_value(rt, maybe_previous_value)
-    end
+    return _previous_output_internal(rt, dependency_key)
+    # if maybe_previous_value === nothing
+    #     return nothing
+    # else
+    #     return _unwrap_salsa_value(rt, maybe_previous_value)
+    # end
 end
 
 function previous_output(::Salsa._TopLevelRuntime)
