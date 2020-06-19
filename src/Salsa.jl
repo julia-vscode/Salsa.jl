@@ -820,6 +820,7 @@ function _safe_deleter_body(::Salsa._TracingRuntime, key)
     error("Attempted impure operation in a derived function!: delete_input!(rt, $key)")
 end
 
+# This function is for use by versioned storage that supports epochs. Not needed for DefaultStorage.
 function new_epoch! end
 
 # Provide Storage-major view on Runtime types for ease of implementing Storage backends.
