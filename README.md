@@ -16,7 +16,7 @@ julia> @declare_input x(rt)::Int
 (x, set_x!, delete_x!)
 
 julia> @derived function x_plus_one(rt)
-           println("x_plus_one")
+           println("Running x_plus_one.")
            return x(rt) + 1
        end
 x_plus_one (generic function with 1 method)
@@ -27,7 +27,7 @@ julia> rt = Runtime();
 julia> set_x!(rt, 1)
 
 julia> x_plus_one(rt)
-x_plus_one
+Running x_plus_one.
 2
 
 julia> x_plus_one(rt)
@@ -36,7 +36,7 @@ julia> x_plus_one(rt)
 julia> set_x!(rt, 10)
 
 julia> x_plus_one(rt)
-x_plus_one
+Running x_plus_one.
 11
 ```
 
