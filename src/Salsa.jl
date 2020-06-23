@@ -828,6 +828,8 @@ const RuntimeWithStorage{ST,CT} = Runtime{CT,ST}
 const _TopLevelRuntimeWithStorage{ST,CT} = _TopLevelRuntime{CT,ST}
 const _TracingRuntimeWithStorage{ST,CT} = _TracingRuntime{CT,ST}
 
+# Default context manual storage
+RuntimeWithStorage{ST}(st = ST()) where {ST} = Runtime{EmptyContext,ST}(EmptyContext(), st)
 
 include("default_storage.jl")
 using ._DefaultSalsaStorage: DefaultStorage, DefaultRuntime
