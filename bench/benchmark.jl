@@ -7,6 +7,10 @@ using BenchmarkTools
     in1(rt, x) + 1
 end
 
+@derived function d2(rt, x::Int)
+    d1(rt, x) + 1
+end
+
 function simple_bench(rt=Runtime(); N, iters)
     rt = Runtime()
     for j in 1:iters
@@ -15,7 +19,7 @@ function simple_bench(rt=Runtime(); N, iters)
             set_in1!(rt, i, i+j)
         end
         for i in 1:N
-            d1(rt, i)
+            d2(rt, i)
         end
     end
 end
@@ -29,7 +33,7 @@ function parallel_bench(rt::Runtime; N, iters)
         end
         for i in 1:N
             Threads.@spawn begin
-                d1(rt, i)
+                d2(rt, i)
             end
         end
     end
