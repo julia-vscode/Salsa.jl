@@ -546,7 +546,6 @@ macro derived(f)
     # argument *types* to be defined already, so evaling the types should be A OKAY!
     args_typetuple = Tuple(Core.eval(__module__, t) for t in argtypes)
     # TODO: Use the returntype to strongly type the DefualtStorage dictionaries!
-    # TODO: Use base's deduced return type (can be more specific) for DefaultStorage.
     returntype_assertion = Core.eval(__module__, get(dict, :rtype, Any))
     TT = Tuple{args_typetuple[2:end]...}
 
@@ -573,12 +572,15 @@ macro derived(f)
     derived_key_t = :($DerivedKey{typeof($fname),$TT})  # Use type of function, not obj, because closures are not isbits
     derived_key = :($derived_key_t())
 
+    full_TT = Tuple{Runtime, args_typetuple[2:end]...}
+
     # Construct the originally named, visible function
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
         key = $DependencyKey(key = $derived_key, args = ($(argnames[2:end]...),))
-        $memoized_lookup_unwrapped($(argnames[1]), key)::$returntype_assertion
+        RT = $(Core.Compiler.return_type)($userfname, $full_TT)
+        $memoized_lookup_unwrapped($(argnames[1]), key)::RT
     end
     visible_func = MacroTools.combinedef(dict)
 
