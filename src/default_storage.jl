@@ -101,7 +101,8 @@ function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) whe
             # NOTE: Except actually after https://github.com/RelationalAI-oss/Salsa.jl/issues/11
             #       maybe we won't do this anymore, and we'll just use one big dictionary!
             Dict{TT,DerivedValue}()
-        end
+        # NOTE: Somehow, julia has trouble deducing this return value!
+        end::Dict{TT,DerivedValue}  # This type assertion reduces allocations by 2!!
     finally
         unlock(storage.lock)
     end
