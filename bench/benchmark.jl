@@ -7,9 +7,10 @@ using BenchmarkTools
     in1(rt, x) + 1
 end
 
-function simple_bench(rt=Runtime(); N=10, iters=100)
+function simple_bench(rt=Runtime(); N, iters)
     rt = Runtime()
     for j in 1:iters
+        Salsa.new_epoch!(rt)
         for i in 1:N
             set_in1!(rt, i, i+j)
         end
@@ -19,9 +20,10 @@ function simple_bench(rt=Runtime(); N=10, iters=100)
     end
 end
 
-function parallel_bench(rt=Runtime(); N=10, iters=100)
+function parallel_bench(rt::Runtime; N, iters)
     rt = Runtime()
     for j in 1:iters
+        Salsa.new_epoch!(rt)
         for i in 1:N
             set_in1!(rt, i, i+j)
         end
