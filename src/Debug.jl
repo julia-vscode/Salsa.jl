@@ -4,7 +4,12 @@ export @debug_mode, enable_debug, disable_debug, enable_trace_logging, disable_t
 
 
 # `static_debug_mode` is a flag that enables/disables all debug mode checks
-const static_debug_mode = true
+# This defaults to true, but you can disable it either by editing this file, or by
+# setting this environment variable when compiling this package. This is useful
+# for performance benchmarking and in well-tested production environments.
+# e.g. SALSA_STATIC_DEBUG=false
+
+const static_debug_mode = parse(Bool, get(ENV, "SALSA_STATIC_DEBUG", "true"))
 
 
 """
