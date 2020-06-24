@@ -37,6 +37,7 @@ function parallel_bench(rt::Runtime; N, iters)
     end
 end
 
+# Run all the above benchmarks and report the results to stdout
 function run(; N, iters)
     @btime simple_bench(rt; N=$N, iters=$iters) setup=(rt=Runtime())
     @btime parallel_bench(rt; N=$N, iters=$iters) setup=(rt=Runtime())
