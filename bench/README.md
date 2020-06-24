@@ -2,6 +2,11 @@
 
 This directory contains some simple benchmarks for the Salsa package.
 
+Currently this just contains very simple microbenchmarks that repeatedly set a value
+and then read from downstream derived functions that depend on the value.
+These microbenchmarks are useful for improving the base Salsa performance of setting
+and retrieving values in the cache.
+
 ## Generic Benchmarks
 
 All benchmarks in this directory should be kept generic so that users can run them with
