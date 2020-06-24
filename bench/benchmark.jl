@@ -12,7 +12,6 @@ end
 end
 
 function simple_bench(rt::Runtime; N, iters)
-    rt = Runtime()
     for j in 1:iters
         Salsa.new_epoch!(rt)
         for i in 1:N
@@ -25,7 +24,6 @@ function simple_bench(rt::Runtime; N, iters)
 end
 
 function parallel_bench(rt::Runtime; N, iters)
-    rt = Runtime()
     for j in 1:iters
         Salsa.new_epoch!(rt)
         for i in 1:N
