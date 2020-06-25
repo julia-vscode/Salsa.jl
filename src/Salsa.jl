@@ -606,7 +606,7 @@ function invoke_user_function end
 
 
 # We @nospecialize the dependency key argument here for compiler performance.
-function memoized_lookup(rt::Runtime, @nospecialize(dependency_key::DependencyKey))
+function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
     # NOTE: It is important that the tracing happens around all internal computations for
     # derived functions and input functions, as we want to be sure we record _all_
     # dependencies, even those where the result is already cached.
