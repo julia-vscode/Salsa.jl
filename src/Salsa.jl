@@ -16,14 +16,10 @@ using .Debug
 
 # For each Salsa call that is defined, there will be a unique instance of `AbstractKey` that
 # identifies requests for the cached value (ie accessing inputs or calling derived
-# functions). Instances of these key types are used to identify _which methods_ the
-# remaining arguments (as a CallArgs tuple) are the key to.
-# e.g.  foo(rt, 2,3,5) -> DerivedKey{Foo, (Int,Int,Int)}()
-abstract type AbstractKey end
-# Dependencies between Salsa computations are represented via instances of DependencyKey,
+# functions). Instances of these key types are used to identify both _which method_ was
+# called, and what the arguments to that call were.
+# Dependencies between Salsa computations are represented via instances of these keys,
 # which specify everything needed to rerun the computation: (key, function-args)
-# The `key` is the `AbstractKey` instance that specifies _which computation_ was performed
-# (above) and the `args` is a Tuple of the user-provided arguments to that call.
 # The stored arguments do not include the Salsa Runtime object itself, since this is always
 # present, and changes as computations are performed.
 # Given:
@@ -31,47 +27,44 @@ abstract type AbstractKey end
 #   @derived function foo(rt, x::Int, y::Any, z::Number) ... end
 #   @derived function foo(rt, x,y,z) ... end
 # Examples:
-#   foo(rt,1,2,3)  -> DependencyKey(key=DerivedKey{typeof(foo), Tuple{Int,Any,Number}}(),
-#                                   args=(1, 2, 3))
-#   input_str(1,2) -> DependencyKey(key=InputKey{typeof(input_str), Tuple{Int,Int}}(),
-#                                   args=(1, 2))
-Base.@kwdef struct DependencyKey{KT<:AbstractKey,ARG_T<:Tuple}
-    key::KT
-    args::ARG_T  # NOTE: After profiling, typing this _does_ reduce allocations ✔︎
+#  derived_foo(rt, 2,3) -> DerivedKey{typeof(derived_foo)}((2,3))
+#  input_bar(rt, 2,3) -> InputKey{typeof(input_bar)}((2,3))
+#   foo(rt,1,2,3)  -> DerivedKey{typeof(foo), Tuple{Int,Any,Number}}((1, 2, 3))
+#   input_str(1,2) -> InputKey{typeof(input_str), Tuple{Int,Int}}((1, 2))
+abstract type AbstractKey end
+struct DerivedKey{F<:Function,TT<:Tuple} <: AbstractKey
+    args::TT
 end
-# TODO(NHD): Use AutoHashEquals.jl here instead to autogenerate these.
-# Note that floats should be compared for equality, not NaN-ness
-function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
-    return isequal(x1.key, x2.key) && isequal(x1.args, x2.args)
-end
-function Base.isless(x1::DependencyKey, x2::DependencyKey)
-    return isequal(x1.key, x2.key) ? isless(x1.args, x2.args) : isless(x1.key, x2.key)
-end
-Base.hash(x::DependencyKey, h::UInt) = hash(x.key, hash(x.args, hash(:DependencyKey, h)))
-
+DerivedKey{F}(args::TT) where {F<:Function,TT<:Tuple} = DerivedKey{F,TT}(args)
 # NOTE: After several iterations, the InputKeys are now essentially identical to the
 # DerivedKeys. They only differ to allow distinguishing them for dispatch. We might want to
 # do some refactoring to share more code below.
-struct InputKey{F<:Function,TT<:Tuple{Vararg{Any}}} <: AbstractKey end
+struct InputKey{F<:Function,TT<:Tuple} <: AbstractKey
+    args::TT
+end
+InputKey{F}(args::TT) where {F<:Function,TT<:Tuple} = InputKey{F,TT}(args)
+# TODO: Probably don't need both this union and the abstract type. Just pick one.
+# Convenience Union for sharing code.
+const DependencyKey{F,TT} = Union{DerivedKey{F,TT}, InputKey{F,TT}}
 
-# A DerivedKey{F, TT} is stored in the dependencies of a Salsa derived function, in order to
-# represent a call to another derived function.
-# E.g. Given `@derived foo(::MyComponent,::Int,::Int)`, then calling `foo(component,2,3)`
-# would store a dependency as this _DependencyKey_ (defined above):
-#   `DependencyKey(key=DerivedKey{foo, (MyComponent,Int,Int)}(), args=(component,2,3))`
-# TV: used to specify which method for a function with multiple methods.
-struct DerivedKey{F<:Function,TT<:Tuple{Vararg{Any}}} <: AbstractKey end
+# TODO(NHD): Use AutoHashEquals.jl here instead to autogenerate these.
+# Note that floats should be compared for equality, not NaN-ness
+function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
+    return isequal(x1.args, x2.args)
+end
+function Base.isless(x1::DependencyKey, x2::DependencyKey)
+    return isless(x1.args, x2.args)
+end
+Base.hash(x::DerivedKey, h::UInt) = hash(x.args, hash(:DerivedKey, h))
+Base.hash(x::InputKey, h::UInt) = hash(x.args, hash(:InputKey, h))
 
 # Override `Base.show` to minimize redundant printing (skip module name).
+# Don't print the TT type on the DependencyKey, since it's recovered by the fields.
 function Base.show(io::IO, key::InputKey{F,TT}) where {F,TT}
-    print(io, "InputKey{$F,$TT}()")
+    print(io, "InputKey{$F}($(key.args))")
 end
 function Base.show(io::IO, key::DerivedKey{F,TT}) where {F,TT}
-    print(io, "DerivedKey{$F,$TT}()")
-end
-# Don't print the type on the DependencyKey, since it's recovered by the fields.
-function Base.show(io::IO, dep::DependencyKey)
-    print(io, "DependencyKey(key=$(repr(dep.key)), args=$(dep.args))")
+    print(io, "DerivedKey{$F}($(key.args))")
 end
 
 # Pretty-print a DependencyKey for tracing and printing in SalsaWrappedExceptions:
@@ -79,7 +72,7 @@ end
 # @derived foo(::Runtime, 1::Int, 2::Any, 3::Number)
 function _print_dep_key_as_call(
     io::IO,
-    dependency::DependencyKey{<:Union{InputKey{F,TT},DerivedKey{F,TT}}},
+    dependency::DependencyKey{F,TT}
 ) where {F,TT}
     call_args = dependency.args
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
@@ -91,11 +84,11 @@ function _print_dep_key_as_call(
     f_str = string(:(($f,)))[2:end-2]  # (wraps f name in var"" if needed)
     print(io, "$f_str($(join(argsexprs, ", ")))")
 end
-function Base.print(io::IO, dependency::DependencyKey{<:InputKey})
+function Base.print(io::IO, dependency::InputKey)
     print(io, "@input ")
     _print_dep_key_as_call(io, dependency)
 end
-function Base.print(io::IO, dependency::DependencyKey{<:DerivedKey})
+function Base.print(io::IO, dependency::DerivedKey)
     print(io, "@derived ")
     _print_dep_key_as_call(io, dependency)
 end
@@ -590,17 +583,15 @@ macro derived(f)
     dict[:name] = userfname
     userfunc = MacroTools.combinedef(dict)
 
-    derived_key_t = :($DerivedKey{typeof($fname),$TT})  # Use type of function, not obj, because closures are not isbits
-    derived_key = :($derived_key_t())
-
     full_TT = Tuple{Runtime, args_typetuple[2:end]...}
 
     # Construct the originally named, visible function
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
-        key = $DependencyKey(key = $derived_key, args = ($(argnames[2:end]...),))
-        RT = $(Core.Compiler.return_type)($userfname, $full_TT)
+        args = ($(argnames[2:end]...),)
+        key = $DerivedKey{typeof($fname)}(args)
+        RT = $(Core.Compiler.return_type)($userfname, typeof(($(argnames[1]), args...)))
         $memoized_lookup_unwrapped($(argnames[1]), key)::RT
     end
     visible_func = MacroTools.combinedef(dict)
@@ -614,7 +605,7 @@ macro derived(f)
 
             function $Salsa.get_user_function(
                 $(fullargs[1]),
-                ::$derived_key_t,
+                ::$DerivedKey{typeof($fname)},
             )
                 return $userfname
             end
@@ -783,10 +774,7 @@ macro declare_input(e::Expr)
     # Build the Key type here, at macro parse time, since it's expensive to construct at runtime.
     # (Use type of function, not obj, because closures are not isbits)
     input_key_t = InputKey{typeof(getter_f),TT}
-    input_key = input_key_t()
-    #dependency_key_t = DependencyKey{input_key_t}
-    dependency_key_expr =
-        :($DependencyKey(key = $input_key, args = ($(argnames[2:end]...),)))
+    dependency_key_expr = :($input_key_t(($(argnames[2:end]...),)))
     getter_body = quote
         $memoized_lookup_unwrapped($runtime_arg, $dependency_key_expr)::$value_t
     end

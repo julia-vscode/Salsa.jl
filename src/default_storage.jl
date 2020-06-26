@@ -42,7 +42,7 @@ _changed_at(v::DerivedValue)::Revision = v.changed_at
 
 
 const InputMapType = IdDict{InputKey,Dict}
-const DerivedFunctionMapType = IdDict{DerivedKey,Dict}
+const DerivedFunctionMapType = IdDict{Type{<:DerivedKey},Dict}
 
 mutable struct DefaultStorage <: AbstractSalsaStorage
     # The entire Salsa storage is protected by this lock. All accesses and
@@ -64,7 +64,7 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
     # opposite of what would be best: Since DerivedValues are not isbits, they will always
     # be heap allocated, so there's no reason to strongly type their dict. But inputs can
     # be isbits, so it's probably worth specailizing them.
-    inputs_map::Dict{Tuple{Type,Tuple},InputValue}
+    inputs_map::Dict{InputKey,InputValue}
     derived_function_maps::DerivedFunctionMapType
 
     # Tracks whether there are any derived functions currently active. It is an error to
@@ -90,11 +90,11 @@ end
 # input/derived function dynamically, by attaching new Dicts for them to the storage at
 # runtime.
 function get_map_for_key(
-    storage::DefaultStorage, key::DerivedKey{<:Any,TT}, ::Type{RT}
-) where {TT, RT}
+    storage::DefaultStorage, ::KT, ::Type{RT}
+) where {TT, KT<:DerivedKey{<:Any, TT}, RT}
     try
         lock(storage.lock)
-        return get!(storage.derived_function_maps, key) do
+        return get!(storage.derived_function_maps, KT) do
             # PERFORMANCE NOTE: Only construct key inside this do-block to
             # ensure expensive constructor only called once, the first time.
 
@@ -119,17 +119,16 @@ end
 
 function Salsa._previous_output_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:DerivedKey},
+    key::DerivedKey,
 )
     storage = _storage(runtime)
-    derived_key, args = key.key, key.args
+    derived_key, args = key, key.args
 
     previous_output = nothing
 
+    lock(storage.lock)
     try
-        lock(storage.lock)
         cache = get_map_for_key(storage, derived_key)
-
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
@@ -146,8 +145,8 @@ end
 # a nospecialization for every argument type. :(
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:DerivedKey},
-)
+    key::DerivedKey{F,TT},
+)  where {F,TT}
     storage = _storage(runtime)
     try  # For storage.derived_functions_active
         atomic_add!(storage.derived_functions_active, 1)
@@ -156,11 +155,11 @@ function Salsa._memoized_lookup_internal(
         found_existing = false
         should_run_user_func = true
 
-        derived_key, args = key.key, key.args
+        derived_key, args = key, key.args
 
         user_func = get_user_function(runtime, derived_key)
         RT = Core.Compiler.return_type(user_func,
-            Tuple{typeof(runtime), fieldtypes(typeof(key.args))...})
+            Tuple{typeof(runtime), fieldtypes(TT)...})
 
         # NOTE: We currently make no attempts to prevent two Tasks from simultaneously
         # computing the same derived function for the same key. For cheap derived functions
@@ -308,15 +307,13 @@ end
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
     # TODO: It doesn't look like this nospecialize is actually doing anything...
-    key::DependencyKey{<:InputKey{F}},
-) where {F}
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
+    key::InputKey,
+)
     storage = _storage(runtime)
-    cache = get_map_for_key(storage, typedkey)
+    cache = get_map_for_key(storage, key)
     try
         lock(storage.lock)
-        return cache[cache_key]
+        return cache[key]
     finally
         unlock(storage.lock)
     end
@@ -324,21 +321,19 @@ end
 
 function Salsa.set_input!(
     runtime::_TopLevelRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:InputKey{F}},
-    value::T,
-) where {F,T}
+    key::InputKey,
+    value,
+)
     storage = _storage(runtime)
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
 
     # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
     # syntax causes an allocation here and doubles the runtime, but this manual try-finally
     # does not, so it is preferable and we should stick with this.
     try
         lock(storage.lock)
-        cache = get_map_for_key(storage, typedkey)
+        cache = get_map_for_key(storage, key)
 
-        if haskey(cache, cache_key) && _value_isequal_to_cached(cache[cache_key], value)
+        if haskey(cache, key) && _value_isequal_to_cached(cache[key], value)
             # Early Exit Optimization Part 1: Don't dirty anything if setting exactly the
             # same value for an input.
             return
@@ -351,7 +346,7 @@ function Salsa.set_input!(
         @dbg_log_trace @info "Setting input $key => $value"
         storage.current_revision += 1
 
-        cache[cache_key] = InputValue(value, storage.current_revision)
+        cache[key] = InputValue(value, storage.current_revision)
         return nothing
     finally
         unlock(storage.lock)
@@ -368,12 +363,11 @@ end
 
 function Salsa.delete_input!(
     runtime::_TopLevelRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:InputKey{F}},
-) where {F}
+    key::InputKey,
+)
     @dbg_log_trace @info "Deleting input $key"
     storage = _storage(runtime)
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
+    cache = get_map_for_key(storage, key)
 
     # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
     # syntax causes an allocation here and doubles the runtime, but this manual try-finally
@@ -385,8 +379,7 @@ function Salsa.delete_input!(
         @assert storage.derived_functions_active[] == 0
 
         storage.current_revision += 1
-        cache = get_map_for_key(storage, typedkey)
-        delete!(cache, cache_key)
+        delete!(cache, key)
         return nothing
     finally
         unlock(storage.lock)
