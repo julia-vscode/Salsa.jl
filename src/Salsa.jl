@@ -305,8 +305,12 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
     )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
         new{CT,ST}(
             reinterpret(Ptr{ST}, pointer_from_objref(old_rt)),
-            # Start a new, empty trace with the provided call stack.
-            get_trace_with_call_stack(SalsaStackFrame(key, nothing)),
+            # Start a new, empty trace (with the provided call stack if in debug mode)
+            if Salsa.Debug.debug_enabled()
+                get_trace_with_call_stack(SalsaStackFrame(key, nothing))
+            else
+                get_trace_with_call_stack(nothing)
+            end,
         )
     end
 
@@ -316,19 +320,28 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
     )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
         # Push the new computation onto the current Runtime (if it's not there already)
         push_key!(old_rt, key)
-        # Create a new linked list node pointing to the old stack trace.
-        old_trace = get_trace(old_rt.immediate_dependencies_id)
-        new_call_stack = SalsaStackFrame(key, old_trace.call_stack)
-        new{CT,ST}(old_rt.tl_runtime, get_trace_with_call_stack(new_call_stack))
+        # Create a new linked list node (pointing to the old stack trace if debug mode).
+        new_trace = if Salsa.Debug.debug_enabled()
+            old_trace = get_trace(old_rt.immediate_dependencies_id)
+            get_trace_with_call_stack(SalsaStackFrame(key, old_trace.call_stack))
+        else
+            get_trace_with_call_stack(nothing)
+        end
+        new{CT,ST}(old_rt.tl_runtime, new_trace)
     end
 end
 
 # We store the call_stack in the Trace instead of in the runtime, because the trace is a
 # linked-list (meaning not isbits), and we want to keep the Runtime isbits to avoid
 # allocations. Since the Traces are pre-allocated it's okay for them to contain heap ptrs.
-@inline function get_trace_with_call_stack(call_stack::SalsaStackFrame)
+@inline function get_trace_with_call_stack(
+    call_stack::Union{SalsaStackFrame,Nothing}
+    )
     trace_id = get_free_trace_id()
-    get_trace(trace_id).call_stack = call_stack
+    # Set the stack frame if running in debug mode.
+    if call_stack isa SalsaStackFrame
+        get_trace(trace_id).call_stack = call_stack
+    end
     return trace_id
 end
 
