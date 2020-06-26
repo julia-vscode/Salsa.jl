@@ -5,6 +5,7 @@ using ..Salsa:
     Runtime, AbstractSalsaStorage, memoized_lookup, invoke_user_function, collect_trace
 using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
+using Base.Threads: Atomic, atomic_add!, atomic_sub!
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
@@ -68,10 +69,10 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
 
     # Tracks whether there are any derived functions currently active. It is an error to
     # modify any inputs while derived functions are active, on the current Task or any Task.
-    derived_functions_active::Int
+    derived_functions_active::Atomic{Int}
 
     function DefaultStorage()
-        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), 0)
+        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), Atomic{Int}(0))
     end
 end
 
@@ -147,12 +148,7 @@ function Salsa._memoized_lookup_internal(
 )
     storage = _storage(runtime)
     try  # For storage.derived_functions_active
-        try
-            lock(storage.lock)
-            storage.derived_functions_active += 1
-        finally
-            unlock(storage.lock)
-        end
+        atomic_add!(storage.derived_functions_active, 1)
 
         existing_value = nothing
         value = nothing
@@ -267,12 +263,7 @@ function Salsa._memoized_lookup_internal(
 
         return value
     finally
-        try
-            lock(storage.lock)
-            storage.derived_functions_active -= 1
-        finally
-            unlock(storage.lock)
-        end
+        atomic_sub!(storage.derived_functions_active, 1)
     end
 end # _memoized_lookup_internal
 
@@ -344,7 +335,7 @@ function Salsa.set_input!(
 
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
-        @assert storage.derived_functions_active == 0
+        @assert storage.derived_functions_active[] == 0
 
         @dbg_log_trace @info "Setting input $key => $value"
         storage.current_revision += 1
@@ -380,7 +371,7 @@ function Salsa.delete_input!(
         lock(storage.lock)
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
-        @assert storage.derived_functions_active == 0
+        @assert storage.derived_functions_active[] == 0
 
         storage.current_revision += 1
         cache = get_map_for_key(storage, typedkey)
