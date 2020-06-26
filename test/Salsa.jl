@@ -1,14 +1,15 @@
-module SalsaTest
-
 # Inline debugging tests
 
 using Test
 using Salsa
 using Salsa: Runtime, InputKey, DependencyKey
 
+# NOTE: This test file expects `new_test_rt([ctx,])` to be defined before it is called,
+# which is used to construct new Runtime() instances for the tests. This is so that
+# you can run these tests for abitrary Runtime types.
 
 @testset "usage" begin
-    rt = Runtime()
+    rt = new_test_rt()
 
     # Simple function with no inputs
     @derived function f1(rt, x::Int)
@@ -16,7 +17,7 @@ using Salsa: Runtime, InputKey, DependencyKey
         return y
     end
 
-    s = Runtime()
+    s = new_test_rt()
     @test f1(s, 0) === 1
 
     # Works with named or unnamed arguments ✔︎
@@ -30,7 +31,7 @@ using Salsa: Runtime, InputKey, DependencyKey
     @test mymap(s, "hello", 2) === 10
 
 
-    s = Runtime()
+    s = new_test_rt()
     @test_throws KeyError mymap(s, "hello", 2)
     set_mymap!(s, "hello", 2, 10)
     @test mymap(s, "hello", 2) === 10
@@ -44,14 +45,14 @@ using Salsa: Runtime, InputKey, DependencyKey
 
     @test timesed(s, 2,2) === 22
 
-    s = Runtime()
+    s = new_test_rt()
     set_mymap!(s, "hello", 2, 5)
 
     @test timesed(s, 2,2) === 12
 end
 
 @testset "Early Exit Optimization" begin
-    s = Runtime()
+    s = new_test_rt()
     @declare_input x(rt)::Int
     @declare_input y(rt)::Int
 
@@ -85,6 +86,7 @@ end
     @test ftrace == Set([])
 
     # Setting same values also reruns nothing
+    Salsa.new_epoch!(s)
     set_x!(s, x(s))
     set_y!(s, y(s))
     empty!(ftrace)
@@ -92,6 +94,7 @@ end
     @test ftrace == Set([])
 
     # Setting new values with same sum exits after add_em
+    Salsa.new_epoch!(s)
     set_x!(s, x(s) + 1)
     set_y!(s, y(s) - 1)
     empty!(ftrace)
@@ -117,7 +120,7 @@ end
 
     @derived f2(db) = 1
 
-    rt = Runtime()
+    rt = new_test_rt()
     @test f2(rt) == 1
     @test foofunc(rt, 1, [1,1]) == 4
 
@@ -131,7 +134,7 @@ end
     @declare_input a(rt, x::Int)::String
     @declare_input b(rt, x::Int)::Int
 
-    rt = Runtime()
+    rt = new_test_rt()
     set_a!(rt, 1, "hi")
     set_b!(rt, 1, 10)
 
@@ -144,7 +147,7 @@ end
     @declare_input x(rt, x::Int)::Int
     @declare_input x(rt, ::Int, ::String)::String
 
-    rt = Runtime()
+    rt = new_test_rt()
     set_x!(rt, 1)
     set_x!(rt, "hi", "hey")
     set_x!(rt, 1, 2)
@@ -184,37 +187,43 @@ module ErrorHandlingTests
 end
 
 @testset "Robust to derived functions that throw errors" begin
-    db = Runtime()
+    db = new_test_rt()
 
     # Setting a value that should work as expected
+    Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, 1)
     @test ErrorHandlingTests.square_root(db) == 1
 
     # Setting a value that will cause square_root() to throw an Exception
+    Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, -1)
     @test_throws DomainError ErrorHandlingTests.square_root(db)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
+    Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, 1)
     @test ErrorHandlingTests.square_root(db) == 1
 end
 
 @testset "Multi-level derived functions that throw errors #1180" begin
-    db = Runtime()
+    db = new_test_rt()
 
     # Cause `square_root()` to throw an exeception, when being called from within another
     # derived function.
+    Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, -1)
     ErrorHandlingTests.set_map!(db, 1, 2)
     # Attempts 2 * sqrt(-1), and throws an error
     @test_throws DomainError ErrorHandlingTests.val_times_sqrt(db, 1)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
+    Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, 1)
     @test ErrorHandlingTests.square_root(db) == 1
     @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
 
     # Now check that we also recover from KeyErrors when reading from a map:
+    Salsa.new_epoch!(db)
     # Throw error:
     @test_throws KeyError ErrorHandlingTests.val_times_sqrt(db, 100)  # No key 100
     # But this call still works:
@@ -230,20 +239,23 @@ end
         tot / length(all_student_ids(state))
     end
 
-    rt = Runtime()
+    rt = new_test_rt()
 
+    Salsa.new_epoch!(rt)
     set_all_student_ids!(rt, Set([1, 2]))
     set_student_grade!(rt, 1, 4.0)
     set_student_grade!(rt, 2, 2.0)
     @test average_grade(rt) == 3
 
     # Delete student `1`
+    Salsa.new_epoch!(rt)
     delete_student_grade!(rt, 1)
     set_all_student_ids!(rt, Set([2]))
     @test average_grade(rt) == 2.0
 
     # <Test that Salsa correctly throws an error given a programming bug>
     # Delete student only from student_grade but leave in all_student_ids (a programming error)
+    Salsa.new_epoch!(rt)
     delete_student_grade!(rt, 2)
     @test_throws KeyError average_grade(rt)
 end
@@ -259,7 +271,7 @@ end
 @testset "Custom Context" begin
     io1 = IOBuffer()
     io2 = IOBuffer()
-    rt = Runtime{LoggingContext}(LoggingContext(io1))
+    rt = new_test_rt(LoggingContext(io1))
     add(rt, 2,3)
 
     rt.context = LoggingContext(io2)
@@ -290,7 +302,7 @@ end
         sum(named_range(rt, name))
     end
 
-    rt = Runtime()
+    rt = new_test_rt()
     # Initialize the inputs
     I = 1000  # Number of concurrent tasks scheduled
     _names = Tuple(Symbol("range$i") for i in 1:I)
@@ -321,7 +333,7 @@ const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for goo
 
     @declare_input base_value(rt)::Int
 
-    rt = Runtime()
+    rt = new_test_rt()
 
     set_base_value!(rt, 0)
 
@@ -330,6 +342,7 @@ const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for goo
     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
 
     # Now test that the dependencies were recorded correctly, and everything reruns
+    Salsa.new_epoch!(rt)
     set_base_value!(rt, 1)
 
     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
@@ -352,16 +365,18 @@ end
         return sum(outs)
     end
 
-    rt = Runtime()
+    rt = new_test_rt()
     set_i!(rt, 1, 1)
     set_i!(rt, 2, 1)
     @assert b(rt) == 2
 
     # Now, assuming that the deps on a() were correctly recorded, changing i() should
     # trigger re-evaluation of b().
+    Salsa.new_epoch!(rt)
     set_i!(rt, 1, 10)  # Test the change written on same thread (thread 1)
     @test b(rt) == 11
 
+    Salsa.new_epoch!(rt)
     set_i!(rt, 2, 10)  # Test the change written on the _different_ thread (thread 2)
     @test b(rt) == 20
 end
@@ -379,5 +394,3 @@ end
     @test isempty(Test.detect_unbound_args(Salsa._DefaultSalsaStorage, recursive=false))
     @test isempty(Test.detect_unbound_args(Salsa.Debug, recursive=false))
 end
-
-end # SalsaTest
