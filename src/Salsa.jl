@@ -9,7 +9,9 @@ end Salsa
 # This is the entirety of the Salsa API: Users create inputs and derived functions, and
 # access them through a Runtime instance.
 export @derived, @declare_input, Runtime, SalsaWrappedException
+
 import MacroTools
+using Base: @lock
 
 include("Debug.jl")
 using .Debug
@@ -226,15 +228,12 @@ mutable struct TraceOfDependencyKeys
 end
 
 function push_key!(trace::TraceOfDependencyKeys, depkey)
-    try
-        lock(trace.lock)
+    @lock trace.lock begin
         # Performance Optimization: De-duplicating Derived Function Traces
         if depkey ∉ trace.seen_deps
             push!(trace.ordered_deps, depkey)
             push!(trace.seen_deps, depkey)
         end
-    finally
-        unlock(trace.lock)
     end
     return nothing
 end

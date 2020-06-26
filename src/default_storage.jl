@@ -8,6 +8,8 @@ using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
+using Base: @lock
+
 const Revision = Int
 
 struct InputValue{T}
@@ -78,7 +80,7 @@ end
 const DefaultRuntime = Salsa.Runtime{Salsa.EmptyContext,DefaultStorage}
 
 function Base.show(io::IO, storage::DefaultStorage)
-    current_revision = lock(storage.lock) do
+    current_revision = @lock storage.lock begin
         storage.current_revision
     end
     print(io, "Salsa.DefaultStorage($current_revision, ...)")
@@ -89,8 +91,7 @@ end
 # input/derived function dynamically, by attaching new Dicts for them to the storage at
 # runtime.
 function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) where {TT}
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         return get!(storage.derived_function_maps, key) do
             # PERFORMANCE NOTE: Only construct key inside this do-block to
             # ensure expensive constructor only called once, the first time.
@@ -102,8 +103,6 @@ function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) whe
             #       maybe we won't do this anymore, and we'll just use one big dictionary!
             Dict{TT,DerivedValue}()
         end
-    finally
-        unlock(storage.lock)
     end
 end
 function get_map_for_key(storage::DefaultStorage, ::InputKey)
@@ -122,15 +121,12 @@ function Salsa._previous_output_internal(
 
     previous_output = nothing
 
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         cache = get_map_for_key(storage, derived_key)
 
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
-    finally
-        unlock(storage.lock)
     end
 
     return previous_output
@@ -146,11 +142,8 @@ function Salsa._memoized_lookup_internal(
 )
     storage = _storage(runtime)
     try  # For storage.derived_functions_active
-        try
-            lock(storage.lock)
+        @lock storage.lock begin
             storage.derived_functions_active += 1
-        finally
-            unlock(storage.lock)
         end
 
         existing_value = nothing
@@ -255,22 +248,16 @@ function Salsa._memoized_lookup_internal(
                     storage.current_revision,
                     storage.current_revision,
                 )
-                try
-                    lock(storage.lock)
+                @lock storage.lock begin
                     cache[args] = value
-                finally
-                    unlock(storage.lock)
                 end
             end # existing_value
         end # if value === nothing
 
         return value
     finally
-        try
-            lock(storage.lock)
+        @lock storage.lock begin
             storage.derived_functions_active -= 1
-        finally
-            unlock(storage.lock)
         end
     end
 end # _memoized_lookup_internal
@@ -311,11 +298,8 @@ function Salsa._memoized_lookup_internal(
     cache_key = (F, call_args)
     storage = _storage(runtime)
     cache = get_map_for_key(storage, typedkey)
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         return cache[cache_key]
-    finally
-        unlock(storage.lock)
     end
 end
 
@@ -328,11 +312,7 @@ function Salsa.set_input!(
     typedkey, call_args = key.key, key.args
     cache_key = (F, call_args)
 
-    # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
-    # syntax causes an allocation here and doubles the runtime, but this manual try-finally
-    # does not, so it is preferable and we should stick with this.
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         cache = get_map_for_key(storage, typedkey)
 
         if haskey(cache, cache_key) && _value_isequal_to_cached(cache[cache_key], value)
@@ -350,8 +330,6 @@ function Salsa.set_input!(
 
         cache[cache_key] = InputValue(value, storage.current_revision)
         return nothing
-    finally
-        unlock(storage.lock)
     end
 end
 # This function barrier exists to allow specializing the `.value` on the type of
@@ -372,11 +350,7 @@ function Salsa.delete_input!(
     typedkey, call_args = key.key, key.args
     cache_key = (F, call_args)
 
-    # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
-    # syntax causes an allocation here and doubles the runtime, but this manual try-finally
-    # does not, so it is preferable and we should stick with this.
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
         @assert storage.derived_functions_active == 0
@@ -385,8 +359,6 @@ function Salsa.delete_input!(
         cache = get_map_for_key(storage, typedkey)
         delete!(cache, cache_key)
         return nothing
-    finally
-        unlock(storage.lock)
     end
 end
 
