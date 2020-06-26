@@ -612,12 +612,11 @@ macro derived(f)
             # Attach any docstring before this macrocall to the "visible" function.
             Core.@__doc__ $visible_func
 
-            function $Salsa.invoke_user_function(
+            function $Salsa.get_user_function(
                 $(fullargs[1]),
                 ::$derived_key_t,
-                $(fullargs[2:end]...),
             )
-                return $userfname($(argnames...))
+                return $userfname
             end
 
             $fname
@@ -625,7 +624,7 @@ macro derived(f)
     )
 end
 # Methods added by the @derived macro, above.
-function invoke_user_function end
+function get_user_function end
 
 
 # We @nospecialize the dependency key argument here for compiler performance.
@@ -819,6 +818,15 @@ macro declare_input(e::Expr)
         Core.@__doc__ $getter
         $setter
         $deleter
+
+        # For type stability
+        @inline function $Salsa.get_user_function(
+            $(fullargs[1]),
+            ::$input_key_t,
+        )
+            return $getter
+        end
+
         # Return all the generated functions as a hint to REPL users what we're generating.
         ($inputname, $setter_name, $deleter_name)
     end)

@@ -2,7 +2,7 @@ module _DefaultSalsaStorage
 
 import ..Salsa
 using ..Salsa:
-    Runtime, AbstractSalsaStorage, memoized_lookup, invoke_user_function, collect_trace
+    Runtime, AbstractSalsaStorage, memoized_lookup, get_user_function, collect_trace
 using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
 using Base.Threads: Atomic, atomic_add!, atomic_sub!
@@ -89,7 +89,9 @@ end
 # NOTE: This implements the dynamic behavior for Salsa Components, allowing users to define
 # input/derived function dynamically, by attaching new Dicts for them to the storage at
 # runtime.
-function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) where {TT}
+function get_map_for_key(
+    storage::DefaultStorage, key::DerivedKey{<:Any,TT}, ::Type{RT}
+) where {TT, RT}
     try
         lock(storage.lock)
         return get!(storage.derived_function_maps, key) do
@@ -101,9 +103,9 @@ function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) whe
             #       in the existing open-source Salsa.
             # NOTE: Except actually after https://github.com/RelationalAI-oss/Salsa.jl/issues/11
             #       maybe we won't do this anymore, and we'll just use one big dictionary!
-            Dict{TT,DerivedValue}()
+            Dict{TT,DerivedValue{RT}}()
         # NOTE: Somehow, julia has trouble deducing this return value!
-        end::Dict{TT,DerivedValue}  # This type assertion reduces allocations by 2!!
+        end::Dict{TT,DerivedValue{RT}}  # This type assertion reduces allocations by 2!!
     finally
         unlock(storage.lock)
     end
@@ -156,6 +158,10 @@ function Salsa._memoized_lookup_internal(
 
         derived_key, args = key.key, key.args
 
+        user_func = get_user_function(runtime, derived_key)
+        RT = Core.Compiler.return_type(user_func,
+            Tuple{typeof(runtime), fieldtypes(typeof(key.args))...})
+
         # NOTE: We currently make no attempts to prevent two Tasks from simultaneously
         # computing the same derived function for the same key. For cheap derived functions
         # this may be a more optimal behavior than the overhead caused by coordination.
@@ -175,7 +181,7 @@ function Salsa._memoized_lookup_internal(
             lock(storage.lock)
             lock_held = true
 
-            cache = get_map_for_key(storage, derived_key)
+            cache = get_map_for_key(storage, derived_key, RT)
 
             if haskey(cache, args)
                 # TODO: Optimization idea:
@@ -186,7 +192,7 @@ function Salsa._memoized_lookup_internal(
                 #   - We might want to consider keeping some toggle on the Trace object
                 #     itself, to allow us to skip recording the deps for this phase.
 
-                existing_value = getindex(cache, args)
+                existing_value = getindex(cache, args)::DerivedValue{RT}
                 found_existing = true
                 unlock(storage.lock)
                 lock_held = false
@@ -227,7 +233,7 @@ function Salsa._memoized_lookup_internal(
             #     their final destination! :)
 
             @dbg_log_trace @info "invoking $key"
-            v = invoke_user_function(runtime, key.key, key.args...)
+            v = user_func(runtime, key.args...)
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable
             # structs`).
