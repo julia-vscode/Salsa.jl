@@ -49,10 +49,10 @@ const DependencyKey{F,TT} = Union{DerivedKey{F,TT}, InputKey{F,TT}}
 
 # TODO(NHD): Use AutoHashEquals.jl here instead to autogenerate these.
 # Note that floats should be compared for equality, not NaN-ness
-function Base.:(==)(x1::DependencyKey, x2::DependencyKey)
+function Base.:(==)(x1::DK, x2::DK) where DK <: DependencyKey
     return isequal(x1.args, x2.args)
 end
-function Base.isless(x1::DependencyKey, x2::DependencyKey)
+function Base.isless(x1::DK, x2::DK) where DK <: DependencyKey
     return isless(x1.args, x2.args)
 end
 Base.hash(x::DerivedKey, h::UInt) = hash(x.args, hash(:DerivedKey, h))
@@ -605,7 +605,7 @@ macro derived(f)
 
             function $Salsa.get_user_function(
                 $(fullargs[1]),
-                ::$DerivedKey{typeof($fname)},
+                ::$DerivedKey{typeof($fname), <:Tuple{$(argtypes[2:end]...)}},
             )
                 return $userfname
             end
