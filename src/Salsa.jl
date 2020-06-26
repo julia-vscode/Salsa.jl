@@ -566,7 +566,7 @@ macro derived(f)
     # NOTE: I am PRETTY SURE it's okay to eval here. Function definitions already require
     # argument *types* to be defined already, so evaling the types should be A OKAY!
     args_typetuple = Tuple(Core.eval(__module__, t) for t in argtypes)
-    # TODO: Use the returntype to strongly type the DefualtStorage dictionaries!
+    # TODO: Use the returntype to strongly type the DefaultStorage dictionaries!
     returntype_assertion = Core.eval(__module__, get(dict, :rtype, Any))
     TT = Tuple{args_typetuple[2:end]...}
 
@@ -655,7 +655,7 @@ function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
         #     rethrow()
         # end
     finally
-        Salsa.release_trace_id(rt.immediate_dependencies_id)
+        release_trace_id(rt.immediate_dependencies_id)
     end
 end
 

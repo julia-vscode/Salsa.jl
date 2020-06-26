@@ -150,8 +150,9 @@ function Salsa._memoized_lookup_internal(
     try  # For storage.derived_functions_active
         atomic_add!(storage.derived_functions_active, 1)
 
-        existing_value = nothing
-        value = nothing
+        local existing_value, value
+        found_existing = false
+        should_run_user_func = true
 
         derived_key, args = key.key, key.args
 
@@ -186,6 +187,7 @@ function Salsa._memoized_lookup_internal(
                 #     itself, to allow us to skip recording the deps for this phase.
 
                 existing_value = getindex(cache, args)
+                found_existing = true
                 unlock(storage.lock)
                 lock_held = false
 
@@ -196,6 +198,7 @@ function Salsa._memoized_lookup_internal(
                 # value will be stable across the lifetime of this function.
                 if existing_value.verified_at == storage.current_revision
                     value = existing_value
+                    should_run_user_func = false
                     # NOTE: still_valid() will recursively call memoized_lookup, potentially
                     #       recomputing all our recursive dependencies.
                 elseif still_valid(runtime, existing_value)
@@ -204,6 +207,7 @@ function Salsa._memoized_lookup_internal(
                     # without a lock, due to asserts on derived_functions_active.
                     existing_value.verified_at = storage.current_revision
                     value = existing_value
+                    should_run_user_func = false
                 end
             end
         finally
@@ -215,7 +219,7 @@ function Salsa._memoized_lookup_internal(
 
         # At this point (value == nothing) if (and only if) the args are not
         # in the cache, OR if they are in the cache, but they are no longer valid.
-        if value === nothing    # N.B., do not use `isnothing`
+        if should_run_user_func
             # TODO: Optimization idea:
             #   - If `existing_value !== nothing` here, we can avoid an allocation and a
             #     copy by _swapping_ the `trace`'s `ordered_dependencies` with
@@ -228,7 +232,7 @@ function Salsa._memoized_lookup_internal(
             # required to be purely immutable (but not necessarily julia `immutable
             # structs`).
             @dbg_log_trace @info "Returning from $key."
-            if existing_value !== nothing && isequal(existing_value.value, v)
+            if found_existing && isequal(existing_value.value, v)
                 # Early Exit Optimization Part 2: (for Part 1 see `set_input!`, below).
                 # If a derived function computes the exact same value, we can terminate
                 # early and "backdate" the changed_at field to say this value has _not_
