@@ -273,8 +273,9 @@ end # _memoized_lookup_internal
 
 function Salsa._unwrap_salsa_value(
     runtime::RuntimeWithStorage{DefaultStorage},
-    v::Union{DerivedValue{T},InputValue{T}},
-)::T where {T}
+    # Note: the presence of a `where T` on this function causes allocations.
+    v #=::Union{DerivedValue,InputValue} =#
+)
     return v.value
 end
 
