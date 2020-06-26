@@ -221,7 +221,15 @@ mutable struct TraceOfDependencyKeys
     # We always create a new, empty TraceOfDependencyKeys for each derived function,
     # since we're only tracing the immediate dependencies of that function.
     function TraceOfDependencyKeys()
-        new(Vector{DependencyKey}(), Set{DependencyKey}(), Base.ReentrantLock(), nothing)
+        # Pre-allocate all traces to be non-empty, to minimize allocations at runtime.
+        # TODO: Tune this. Too big wastes RAM (though, it's fixed cost up front).
+        #       Current size, 30, adds about 1MiB, which seems not bad.
+        N = 30
+        return new(
+            sizehint!(Vector{DependencyKey}(), N),
+            sizehint!(Set{DependencyKey}(), N),
+            Base.ReentrantLock(),
+            nothing)
     end
 end
 
