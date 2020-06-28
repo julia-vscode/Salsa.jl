@@ -255,7 +255,11 @@ function Salsa._memoized_lookup_internal(
             else
                 @dbg_log_trace @info "Computed new derived value for $key."
                 # The user function computed a new value, which we must now store.
-                value = DerivedValue(
+                # NOTE: We set the computed RT here, which might be more abstract than the
+                # actual type of the value, `v`.
+                # The other option is to change the dicts to be Dict{K, DerivedValue{<:RT}},
+                # but that causes extra allocations.
+                value = DerivedValue{RT}(
                     v,
                     collect_trace(runtime),
                     storage.current_revision,
