@@ -159,8 +159,10 @@ function Salsa._memoized_lookup_internal(
         derived_key, args = key, key.args
 
         user_func = get_user_function(runtime, derived_key)
-        RT = Core.Compiler.return_type(user_func,
-            Tuple{typeof(runtime), fieldtypes(TT)...})
+        # Always just box all the results in the same structure for max type stability,
+        # since we don't gain anything by knowing the type here anyway. We just have
+        # to rely on julia to deduce the return type at the very end.
+        RT = Any
 
         # NOTE: We currently make no attempts to prevent two Tasks from simultaneously
         # computing the same derived function for the same key. For cheap derived functions

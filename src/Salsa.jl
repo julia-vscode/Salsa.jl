@@ -591,6 +591,9 @@ macro derived(f)
     dict[:body] = quote
         args = ($(argnames[2:end]...),)
         key = $DerivedKey{typeof($fname)}(args)
+        # This call to return_type seems okay, since i think the compiler _has to_ be able
+        # to decide this. We've seen this hang when run inside body of memoized_lookup, but
+        # here at top-level where userfname is known, I think this should be okay.
         RT = $(Core.Compiler.return_type)($userfname, typeof(($(argnames[1]), args...)))
         $memoized_lookup_unwrapped($(argnames[1]), key)::RT
     end
