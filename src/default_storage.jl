@@ -6,6 +6,7 @@ using ..Salsa:
 using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
 using Base.Threads: Atomic, atomic_add!, atomic_sub!
+using Base: @lock
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
@@ -79,7 +80,7 @@ end
 const DefaultRuntime = Salsa.Runtime{Salsa.EmptyContext,DefaultStorage}
 
 function Base.show(io::IO, storage::DefaultStorage)
-    current_revision = lock(storage.lock) do
+    current_revision = @lock storage.lock begin
         storage.current_revision
     end
     print(io, "Salsa.DefaultStorage($current_revision, ...)")
