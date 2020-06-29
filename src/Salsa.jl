@@ -591,11 +591,12 @@ macro derived(f)
     dict[:body] = quote
         args = ($(argnames[2:end]...),)
         key = $DerivedKey{typeof($fname)}(args)
-        # This call to return_type seems okay, since i think the compiler _has to_ be able
-        # to decide this. We've seen this hang when run inside body of memoized_lookup, but
-        # here at top-level where userfname is known, I think this should be okay.
-        RT = $(Core.Compiler.return_type)($userfname, typeof(($(argnames[1]), args...)))
-        $memoized_lookup_unwrapped($(argnames[1]), key)::RT
+        # TODO: Without this, derived functions are all type unstable, unless the user puts
+        # a return type annotation on the function.. :( But we have to turn this off
+        # because the compiler is hanging, taking >1 hour in Delve.
+        # TODO: File an issue about this. This shouldn't be happening!
+        #RT = $(Core.Compiler.return_type)($userfname, typeof(($(argnames[1]), args...)))
+        $memoized_lookup_unwrapped($(argnames[1]), key) #::RT
     end
     visible_func = MacroTools.combinedef(dict)
 
