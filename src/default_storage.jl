@@ -66,8 +66,7 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
     # be heap allocated, so there's no reason to strongly type their dict. But inputs can
     # be isbits, so it's probably worth specailizing them.
     inputs_map::Dict{InputKey,InputValue}
-    # Strongly type all DerivedValues as Any inside Salsa
-    derived_function_map::Dict{DerivedKey, DerivedValue{Any}}
+    derived_function_maps::DerivedFunctionMapType
 
     # Tracks whether there are any derived functions currently active. It is an error to
     # modify any inputs while derived functions are active, on the current Task or any Task.
@@ -91,29 +90,28 @@ end
 # NOTE: This implements the dynamic behavior for Salsa Components, allowing users to define
 # input/derived function dynamically, by attaching new Dicts for them to the storage at
 # runtime.
-function derived_functions_map(
-    storage::DefaultStorage,
-)
-    return storage.derived_function_map
-    #try
-    #    lock(storage.lock)
-    #    return get!(storage.derived_function_maps, KT) do
-    #        # PERFORMANCE NOTE: Only construct key inside this do-block to
-    #        # ensure expensive constructor only called once, the first time.
+function get_map_for_key(
+    storage::DefaultStorage, ::KT, ::Type{RT}
+) where {TT, KT<:DerivedKey{<:Any, TT}, RT}
+    try
+        lock(storage.lock)
+        return get!(storage.derived_function_maps, KT) do
+            # PERFORMANCE NOTE: Only construct key inside this do-block to
+            # ensure expensive constructor only called once, the first time.
 
-    #        # TODO: Use the macro's returntype to strongly type the value.
-    #        #       We'll have to generate this function from within the macro, like we used to
-    #        #       in the existing open-source Salsa.
-    #        # NOTE: Except actually after https://github.com/RelationalAI-oss/Salsa.jl/issues/11
-    #        #       maybe we won't do this anymore, and we'll just use one big dictionary!
-    #        Dict{TT,DerivedValue{RT}}()
-    #    # NOTE: Somehow, julia has trouble deducing this return value!
-    #    end::Dict{TT,DerivedValue{RT}}  # This type assertion reduces allocations by 2!!
-    #finally
-    #    unlock(storage.lock)
-    #end
+            # TODO: Use the macro's returntype to strongly type the value.
+            #       We'll have to generate this function from within the macro, like we used to
+            #       in the existing open-source Salsa.
+            # NOTE: Except actually after https://github.com/RelationalAI-oss/Salsa.jl/issues/11
+            #       maybe we won't do this anymore, and we'll just use one big dictionary!
+            Dict{TT,DerivedValue{RT}}()
+        # NOTE: Somehow, julia has trouble deducing this return value!
+        end::Dict{TT,DerivedValue{RT}}  # This type assertion reduces allocations by 2!!
+    finally
+        unlock(storage.lock)
+    end
 end
-function inputs_map(storage::DefaultStorage)
+function get_map_for_key(storage::DefaultStorage, ::InputKey)
     # We use one big dictionary for the inputs, storing them all together, so any input key
     # would return the same value here. :)
     return storage.inputs_map
@@ -131,7 +129,7 @@ function Salsa._previous_output_internal(
 
     lock(storage.lock)
     try
-        cache = inputs_map(storage)
+        cache = get_map_for_key(storage, derived_key)
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
@@ -185,9 +183,9 @@ function Salsa._memoized_lookup_internal(
             lock(storage.lock)
             lock_held = true
 
-            cache = derived_functions_map(storage)
+            cache = get_map_for_key(storage, derived_key, RT)
 
-            if haskey(cache, key)
+            if haskey(cache, args)
                 # TODO: Optimization idea:
                 #   - There's no reason to be tracing the Salsa functions during
                 #     the `still_valid` check, since we're not going to use them. We might
@@ -196,7 +194,7 @@ function Salsa._memoized_lookup_internal(
                 #   - We might want to consider keeping some toggle on the Trace object
                 #     itself, to allow us to skip recording the deps for this phase.
 
-                existing_value = getindex(cache, key)::DerivedValue{RT}
+                existing_value = getindex(cache, args)::DerivedValue{RT}
                 found_existing = true
                 unlock(storage.lock)
                 lock_held = false
@@ -272,7 +270,7 @@ function Salsa._memoized_lookup_internal(
                 )
                 try
                     lock(storage.lock)
-                    cache[key] = value
+                    cache[args] = value
                 finally
                     unlock(storage.lock)
                 end
@@ -319,7 +317,7 @@ function Salsa._memoized_lookup_internal(
     key::InputKey,
 )
     storage = _storage(runtime)
-    cache = inputs_map(storage)
+    cache = get_map_for_key(storage, key)
     try
         lock(storage.lock)
         return cache[key]
@@ -340,7 +338,7 @@ function Salsa.set_input!(
     # does not, so it is preferable and we should stick with this.
     try
         lock(storage.lock)
-        cache = inputs_map(storage)
+        cache = get_map_for_key(storage, key)
 
         if haskey(cache, key) && _value_isequal_to_cached(cache[key], value)
             # Early Exit Optimization Part 1: Don't dirty anything if setting exactly the
@@ -376,7 +374,7 @@ function Salsa.delete_input!(
 )
     @dbg_log_trace @info "Deleting input $key"
     storage = _storage(runtime)
-    cache = inputs_map(storage)
+    cache = get_map_for_key(storage, key)
 
     # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
     # syntax causes an allocation here and doubles the runtime, but this manual try-finally
