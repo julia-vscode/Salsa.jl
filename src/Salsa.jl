@@ -223,6 +223,10 @@ mutable struct TraceOfDependencyKeys
     # It's an immutable structure (linked list) to make it thread-safe.
     call_stack::Union{Nothing,SalsaStackFrame}
 
+    # This is set to false during recursive "still_valid" checks to avoid unused dependency
+    # tracking, to save time and allocs.
+    should_trace::Bool
+
     # We always create a new, empty TraceOfDependencyKeys for each derived function,
     # since we're only tracing the immediate dependencies of that function.
     function TraceOfDependencyKeys()
@@ -234,11 +238,16 @@ mutable struct TraceOfDependencyKeys
             sizehint!(Vector{DependencyKey}(), N),
             sizehint!(Set{DependencyKey}(), N),
             Base.ReentrantLock(),
-            nothing)
+            nothing,
+            true)
     end
 end
 
 function push_key!(trace::TraceOfDependencyKeys, depkey)
+    # (Don't need to lock around this since it can never be modified in parallel.)
+    if !trace.should_trace
+        return
+    end
     @lock trace.lock begin
         # Performance Optimization: De-duplicating Derived Function Traces
         if depkey ∉ trace.seen_deps

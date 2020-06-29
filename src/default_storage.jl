@@ -175,6 +175,7 @@ function Salsa._memoized_lookup_internal(
         # violations, e.g. overwriting newer values with outdated results.
         lock_held::Bool = false
         local cache
+        trace = Salsa.get_trace(runtime.immediate_dependencies_id) :: Salsa.TraceOfDependencyKeys
         try
             lock(storage.lock)
             lock_held = true
@@ -182,13 +183,14 @@ function Salsa._memoized_lookup_internal(
             cache = get_map_for_key(storage, derived_key, RT)
 
             if haskey(cache, args)
-                # TODO: Optimization idea:
+                # Optimization: Skip tracing dependencies when check still_valid on values
                 #   - There's no reason to be tracing the Salsa functions during
-                #     the `still_valid` check, since we're not going to use them. We might
-                #     _do_ still want to keep the stack trace though for cycle detection and
+                #     the `still_valid` check, since we're not going to use them. We _do_
+                #     still want to keep the stack trace though for cycle detection and
                 #     error messages.
-                #   - We might want to consider keeping some toggle on the Trace object
-                #     itself, to allow us to skip recording the deps for this phase.
+                #   - So we set this toggle on the Trace object itself, to allow us to skip
+                #     recording the deps for this phase.
+                trace.should_trace = false
 
                 existing_value = getindex(cache, args)::DerivedValue{RT}
                 found_existing = true
@@ -222,6 +224,7 @@ function Salsa._memoized_lookup_internal(
                 unlock(storage.lock)
                 lock_held = false
             end
+            trace.should_trace = true
         end
 
         # At this point (value == nothing) if (and only if) the args are not
