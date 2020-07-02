@@ -231,6 +231,8 @@ mutable struct TraceOfDependencyKeys
     # since we're only tracing the immediate dependencies of that function.
     function TraceOfDependencyKeys()
         # Pre-allocate all traces to be non-empty, to minimize allocations at runtime.
+        # These traces are all constructed once ahead of time in the per-thread trace pools,
+        # so this initialization is only done once during Module __init__().
         # TODO: Tune this. Too big wastes RAM (though, it's fixed cost up front).
         #       Current size, 30, adds about 1MiB, which seems not bad.
         N = 30
