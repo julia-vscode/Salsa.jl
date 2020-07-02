@@ -10,7 +10,13 @@ using Base: @lock
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
-using Base: @lock
+# --------------------
+# TODO:
+# - Investigate @nospecialize on user arguments for compiler performance?
+#    - We tried this, but saw perf regressions, so we maybe don't understand the
+#      specializations that are going on.
+# --------------------
+
 
 const Revision = Int
 
@@ -137,9 +143,6 @@ function Salsa._previous_output_internal(
 end
 
 
-# TODO: I think we can @nospecialize the arguments for compiler performance?
-# TODO: It doesn't seem like this @nospecialize is working... It still seems to be compiling
-# a nospecialization for every argument type. :(
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
     key::DerivedKey{F,TT},
@@ -334,10 +337,8 @@ end
 
 # --- Inputs --------------------------------------------------------------------------
 
-# TODO: I think we can @nospecialize the arguments for compiler performance?
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    # TODO: It doesn't look like this nospecialize is actually doing anything...
     key::InputKey,
 )
     storage = _storage(runtime)
