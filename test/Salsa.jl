@@ -2,7 +2,7 @@
 
 using Test
 using Salsa
-using Salsa: Runtime, InputKey, DependencyKey
+using Salsa: Runtime, InputKey, DependencyKey, SalsaWrappedException
 
 # NOTE: This test file expects `new_test_rt([ctx,])` to be defined before it is called,
 # which is used to construct new Runtime() instances for the tests. This is so that
@@ -32,7 +32,7 @@ using Salsa: Runtime, InputKey, DependencyKey
 
 
     s = new_test_rt()
-    @test_throws KeyError mymap(s, "hello", 2)
+    @test_throws SalsaWrappedException{KeyError} mymap(s, "hello", 2)
     set_mymap!(s, "hello", 2, 10)
     @test mymap(s, "hello", 2) === 10
 
@@ -197,7 +197,7 @@ end
     # Setting a value that will cause square_root() to throw an Exception
     Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, -1)
-    @test_throws DomainError ErrorHandlingTests.square_root(db)
+    @test_throws SalsaWrappedException{DomainError} ErrorHandlingTests.square_root(db)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     Salsa.new_epoch!(db)
@@ -214,7 +214,7 @@ end
     ErrorHandlingTests.set_val!(db, -1)
     ErrorHandlingTests.set_map!(db, 1, 2)
     # Attempts 2 * sqrt(-1), and throws an error
-    @test_throws DomainError ErrorHandlingTests.val_times_sqrt(db, 1)
+    @test_throws SalsaWrappedException{DomainError} ErrorHandlingTests.val_times_sqrt(db, 1)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     Salsa.new_epoch!(db)
@@ -224,8 +224,8 @@ end
 
     # Now check that we also recover from KeyErrors when reading from a map:
     Salsa.new_epoch!(db)
-    # Throw error:
-    @test_throws KeyError ErrorHandlingTests.val_times_sqrt(db, 100)  # No key 100
+    # Throw error (No key 100):
+    @test_throws SalsaWrappedException{KeyError} ErrorHandlingTests.val_times_sqrt(db, 100)
     # But this call still works:
     @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
 end
@@ -257,7 +257,7 @@ end
     # Delete student only from student_grade but leave in all_student_ids (a programming error)
     Salsa.new_epoch!(rt)
     delete_student_grade!(rt, 2)
-    @test_throws KeyError average_grade(rt)
+    @test_throws SalsaWrappedException{KeyError} average_grade(rt)
 end
 
 struct LoggingContext
