@@ -185,6 +185,9 @@ function Salsa._memoized_lookup_internal(
                 unlock(storage.lock)
                 lock_held = false
 
+                # storage.current_revision should be monotonically increasing.
+                @debug_mode @assert (storage.current_revision >= existing_value.verified_at)
+
                 # NOTE: There is no race condition possible here, despite that the storage
                 # isn't locked, because all code that might bump `current_revision`
                 # (`set_input!` and `delete_input!`) first asserts that there are no active

@@ -8,7 +8,6 @@ export @debug_mode, enable_debug, disable_debug, enable_trace_logging, disable_t
 # setting this environment variable when compiling this package. This is useful
 # for performance benchmarking and in well-tested production environments.
 # e.g. SALSA_STATIC_DEBUG=false
-
 const static_debug_mode = parse(Bool, get(ENV, "SALSA_STATIC_DEBUG", "true"))
 
 
