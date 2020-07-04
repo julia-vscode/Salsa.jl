@@ -187,8 +187,8 @@ end
 function Base.collect(stack::SalsaStackFrame)
     out = DependencyKey[stack.dp]
     while stack.next !== nothing
-        push!(out, stack.dp)
         stack = stack.next
+        push!(out, stack.dp)
     end
     return out
 end
