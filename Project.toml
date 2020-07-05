@@ -8,6 +8,7 @@ ExceptionUnwrapping = "460bff9d-24e4-43bc-9d9f-a8973cb893f4"
 MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 
 [compat]
+ExceptionUnwrapping = "0.1"
 MacroTools = "0.5"
 julia = "1.3"
 
