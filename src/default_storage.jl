@@ -2,13 +2,21 @@ module _DefaultSalsaStorage
 
 import ..Salsa
 using ..Salsa:
-    Runtime, AbstractSalsaStorage, memoized_lookup, invoke_user_function, collect_trace
+    Runtime, AbstractSalsaStorage, memoized_lookup, get_user_function, collect_trace
 using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
+using Base.Threads: Atomic, atomic_add!, atomic_sub!
+using Base: @lock
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
-using Base: @lock
+# --------------------
+# TODO:
+# - Investigate @nospecialize on user arguments for compiler performance?
+#    - We tried this, but saw perf regressions, so we maybe don't understand the
+#      specializations that are going on.
+# --------------------
+
 
 const Revision = Int
 
@@ -43,7 +51,7 @@ _changed_at(v::DerivedValue)::Revision = v.changed_at
 
 
 const InputMapType = IdDict{InputKey,Dict}
-const DerivedFunctionMapType = IdDict{DerivedKey,Dict}
+const DerivedFunctionMapType = IdDict{Type{<:DerivedKey},Dict}
 
 mutable struct DefaultStorage <: AbstractSalsaStorage
     # The entire Salsa storage is protected by this lock. All accesses and
@@ -65,15 +73,15 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
     # opposite of what would be best: Since DerivedValues are not isbits, they will always
     # be heap allocated, so there's no reason to strongly type their dict. But inputs can
     # be isbits, so it's probably worth specailizing them.
-    inputs_map::Dict{Tuple{Type,Tuple},InputValue}
+    inputs_map::Dict{InputKey,InputValue}
     derived_function_maps::DerivedFunctionMapType
 
     # Tracks whether there are any derived functions currently active. It is an error to
     # modify any inputs while derived functions are active, on the current Task or any Task.
-    derived_functions_active::Int
+    derived_functions_active::Atomic{Int}
 
     function DefaultStorage()
-        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), 0)
+        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), Atomic{Int}(0))
     end
 end
 
@@ -90,9 +98,11 @@ end
 # NOTE: This implements the dynamic behavior for Salsa Components, allowing users to define
 # input/derived function dynamically, by attaching new Dicts for them to the storage at
 # runtime.
-function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) where {TT}
+function get_map_for_key(
+    storage::DefaultStorage, ::KT, ::Type{RT}
+) where {TT, KT<:DerivedKey{<:Any, TT}, RT}
     @lock storage.lock begin
-        return get!(storage.derived_function_maps, key) do
+        return get!(storage.derived_function_maps, KT) do
             # PERFORMANCE NOTE: Only construct key inside this do-block to
             # ensure expensive constructor only called once, the first time.
 
@@ -101,8 +111,9 @@ function get_map_for_key(storage::DefaultStorage, key::DerivedKey{<:Any,TT}) whe
             #       in the existing open-source Salsa.
             # NOTE: Except actually after https://github.com/RelationalAI-oss/Salsa.jl/issues/11
             #       maybe we won't do this anymore, and we'll just use one big dictionary!
-            Dict{TT,DerivedValue}()
-        end
+            Dict{TT,DerivedValue{RT}}()
+        # NOTE: Somehow, julia has trouble deducing this return value!
+        end::Dict{TT,DerivedValue{RT}}  # This type assertion reduces allocations by 2!!
     end
 end
 function get_map_for_key(storage::DefaultStorage, ::InputKey)
@@ -114,16 +125,15 @@ end
 
 function Salsa._previous_output_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:DerivedKey},
+    key::DerivedKey,
 )
     storage = _storage(runtime)
-    derived_key, args = key.key, key.args
+    derived_key, args = key, key.args
 
     previous_output = nothing
 
     @lock storage.lock begin
         cache = get_map_for_key(storage, derived_key)
-
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
@@ -133,23 +143,25 @@ function Salsa._previous_output_internal(
 end
 
 
-# TODO: I think we can @nospecialize the arguments for compiler performance?
-# TODO: It doesn't seem like this @nospecialize is working... It still seems to be compiling
-# a nospecialization for every argument type. :(
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:DerivedKey},
-)
+    key::DerivedKey{F,TT},
+)  where {F,TT}
     storage = _storage(runtime)
     try  # For storage.derived_functions_active
-        @lock storage.lock begin
-            storage.derived_functions_active += 1
-        end
+        atomic_add!(storage.derived_functions_active, 1)
 
-        existing_value = nothing
-        value = nothing
+        local existing_value, value
+        found_existing = false
+        should_run_user_func = true
 
-        derived_key, args = key.key, key.args
+        derived_key, args = key, key.args
+
+        user_func = get_user_function(runtime, derived_key)
+        # Always just box all the results in the same structure for max type stability,
+        # since we don't gain anything by knowing the type here anyway. We just have
+        # to rely on julia to deduce the return type at the very end.
+        RT = Any
 
         # NOTE: We currently make no attempts to prevent two Tasks from simultaneously
         # computing the same derived function for the same key. For cheap derived functions
@@ -166,22 +178,25 @@ function Salsa._memoized_lookup_internal(
         # violations, e.g. overwriting newer values with outdated results.
         lock_held::Bool = false
         local cache
+        trace = Salsa.get_trace(runtime.immediate_dependencies_id) :: Salsa.TraceOfDependencyKeys
         try
             lock(storage.lock)
             lock_held = true
 
-            cache = get_map_for_key(storage, derived_key)
+            cache = get_map_for_key(storage, derived_key, RT)
 
             if haskey(cache, args)
-                # TODO: Optimization idea:
+                # Optimization: Skip tracing dependencies when check still_valid on values
                 #   - There's no reason to be tracing the Salsa functions during
-                #     the `still_valid` check, since we're not going to use them. We might
-                #     _do_ still want to keep the stack trace though for cycle detection and
+                #     the `still_valid` check, since we're not going to use them. We _do_
+                #     still want to keep the stack trace though for cycle detection and
                 #     error messages.
-                #   - We might want to consider keeping some toggle on the Trace object
-                #     itself, to allow us to skip recording the deps for this phase.
+                #   - So we set this toggle on the Trace object itself, to allow us to skip
+                #     recording the deps for this phase.
+                trace.should_trace = false
 
-                existing_value = getindex(cache, args)
+                existing_value = getindex(cache, args)::DerivedValue{RT}
+                found_existing = true
                 unlock(storage.lock)
                 lock_held = false
 
@@ -195,6 +210,7 @@ function Salsa._memoized_lookup_internal(
                 # value will be stable across the lifetime of this function.
                 if existing_value.verified_at == storage.current_revision
                     value = existing_value
+                    should_run_user_func = false
                     # NOTE: still_valid() will recursively call memoized_lookup, potentially
                     #       recomputing all our recursive dependencies.
                 elseif still_valid(runtime, existing_value)
@@ -203,6 +219,7 @@ function Salsa._memoized_lookup_internal(
                     # without a lock, due to asserts on derived_functions_active.
                     existing_value.verified_at = storage.current_revision
                     value = existing_value
+                    should_run_user_func = false
                 end
             end
         finally
@@ -210,24 +227,40 @@ function Salsa._memoized_lookup_internal(
                 unlock(storage.lock)
                 lock_held = false
             end
+            trace.should_trace = true
         end
 
         # At this point (value == nothing) if (and only if) the args are not
         # in the cache, OR if they are in the cache, but they are no longer valid.
-        if value === nothing    # N.B., do not use `isnothing`
-            # TODO: Optimization idea:
-            #   - If `existing_value !== nothing` here, we can avoid an allocation and a
-            #     copy by _swapping_ the `trace`'s `ordered_dependencies` with
-            #     `value.dependencies`, so that the deps are written in-place directly into
-            #     their final destination! :)
-
+        if should_run_user_func
             @dbg_log_trace @info "invoking $key"
-            v = invoke_user_function(runtime, key.key, key.args...)
+            if found_existing
+                # Dependency array swap Optimization:
+                #   If we've already got an `existing_value` object here, we can avoid an
+                #   allocation and a copy by _swapping_ the `trace`'s `ordered_dependencies`
+                #   with `existing_value.dependencies`, so that the deps are written
+                #   in-place directly into their final destination! :)
+                trace = Salsa.get_trace(runtime.immediate_dependencies_id)
+                # Temporarily swap the dependency vectors while running user_func so the
+                # deps are recorded in-place. Note that we must swap them back at the end.
+                existing_value.dependencies, trace.ordered_deps =
+                    trace.ordered_deps, existing_value.dependencies
+                try
+                    v = user_func(runtime, key.args...)
+                finally
+                    # Swap back the dependency vectors so the vector isn't modified by
+                    # future traces.
+                    existing_value.dependencies, trace.ordered_deps =
+                        trace.ordered_deps, existing_value.dependencies
+                end
+            else
+                v = user_func(runtime, key.args...)
+            end
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable
             # structs`).
             @dbg_log_trace @info "Returning from $key."
-            if existing_value !== nothing && isequal(existing_value.value, v)
+            if found_existing && isequal(existing_value.value, v)
                 # Early Exit Optimization Part 2: (for Part 1 see `set_input!`, below).
                 # If a derived function computes the exact same value, we can terminate
                 # early and "backdate" the changed_at field to say this value has _not_
@@ -238,14 +271,28 @@ function Salsa._memoized_lookup_internal(
                 # Note that just because it computed the same value, it doesn't mean it
                 # computed it in the same way, so we need to update the list of
                 # dependencies as well.
-                existing_value.dependencies = collect_trace(runtime)
+                # HOWEVER, we can actually skip this, thanks to the swap-optimization above.
+                # existing_value.dependencies = collect_trace(runtime)
+
                 # We keep the old computed `.value` rather than the new value to help catch
                 # bugs with users' over-permissive `isequal()` functions earlier.
+                value = existing_value
+            elseif found_existing
+                # Reuse as much of the existing_value's structure to avoid allocations
+                existing_value.value = v
+                # We skip this thanks to the swap-optimization, above.
+                # existing_value.dependencies = collect_trace(runtime)
+                existing_value.changed_at = storage.current_revision
+                existing_value.verified_at = storage.current_revision
                 value = existing_value
             else
                 @dbg_log_trace @info "Computed new derived value for $key."
                 # The user function computed a new value, which we must now store.
-                value = DerivedValue(
+                # NOTE: We set the computed RT here, which might be more abstract than the
+                # actual type of the value, `v`.
+                # The other option is to change the dicts to be Dict{K, DerivedValue{<:RT}},
+                # but that causes extra allocations.
+                value = DerivedValue{RT}(
                     v,
                     collect_trace(runtime),
                     storage.current_revision,
@@ -259,16 +306,15 @@ function Salsa._memoized_lookup_internal(
 
         return value
     finally
-        @lock storage.lock begin
-            storage.derived_functions_active -= 1
-        end
+        atomic_sub!(storage.derived_functions_active, 1)
     end
 end # _memoized_lookup_internal
 
 function Salsa._unwrap_salsa_value(
     runtime::RuntimeWithStorage{DefaultStorage},
-    v::Union{DerivedValue{T},InputValue{T}},
-)::T where {T}
+    # Note: the presence of a `where T` on this function causes allocations.
+    v #=::Union{DerivedValue,InputValue} =#
+)
     return v.value
 end
 
@@ -291,34 +337,28 @@ end
 
 # --- Inputs --------------------------------------------------------------------------
 
-# TODO: I think we can @nospecialize the arguments for compiler performance?
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
-    # TODO: It doesn't look like this nospecialize is actually doing anything...
-    key::DependencyKey{<:InputKey{F}},
-) where {F}
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
+    key::InputKey,
+)
     storage = _storage(runtime)
-    cache = get_map_for_key(storage, typedkey)
+    cache = get_map_for_key(storage, key)
     @lock storage.lock begin
-        return cache[cache_key]
+        return cache[key]
     end
 end
 
 function Salsa.set_input!(
     runtime::_TopLevelRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:InputKey{F}},
-    value::T,
-) where {F,T}
+    key::InputKey,
+    value,
+)
     storage = _storage(runtime)
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
 
     @lock storage.lock begin
-        cache = get_map_for_key(storage, typedkey)
+        cache = get_map_for_key(storage, key)
 
-        if haskey(cache, cache_key) && _value_isequal_to_cached(cache[cache_key], value)
+        if haskey(cache, key) && _value_isequal_to_cached(cache[key], value)
             # Early Exit Optimization Part 1: Don't dirty anything if setting exactly the
             # same value for an input.
             return
@@ -326,12 +366,12 @@ function Salsa.set_input!(
 
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
-        @assert storage.derived_functions_active == 0
+        @assert storage.derived_functions_active[] == 0
 
         @dbg_log_trace @info "Setting input $key => $value"
         storage.current_revision += 1
 
-        cache[cache_key] = InputValue(value, storage.current_revision)
+        cache[key] = InputValue(value, storage.current_revision)
         return nothing
     end
 end
@@ -346,21 +386,19 @@ end
 
 function Salsa.delete_input!(
     runtime::_TopLevelRuntimeWithStorage{DefaultStorage},
-    key::DependencyKey{<:InputKey{F}},
-) where {F}
+    key::InputKey,
+)
     @dbg_log_trace @info "Deleting input $key"
     storage = _storage(runtime)
-    typedkey, call_args = key.key, key.args
-    cache_key = (F, call_args)
+    cache = get_map_for_key(storage, key)
 
     @lock storage.lock begin
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
-        @assert storage.derived_functions_active == 0
+        @assert storage.derived_functions_active[] == 0
 
         storage.current_revision += 1
-        cache = get_map_for_key(storage, typedkey)
-        delete!(cache, cache_key)
+        delete!(cache, key)
         return nothing
     end
 end
