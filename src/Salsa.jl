@@ -271,6 +271,13 @@ function collect_trace(trace::TraceOfDependencyKeys)
 
     return copy(trace.ordered_deps)
 end
+function collect_stack(trace::TraceOfDependencyKeys)
+    if trace.call_stack === nothing
+        return DependencyKey[]
+    else
+        return collect(trace.call_stack)
+    end
+end
 
 # Branching constructor for _TracingRuntime, which also adds the key to the parent
 # runtime. Defined in the _TracingRuntime struct, below.
@@ -677,7 +684,7 @@ function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
         if !(e isa SalsaWrappedException)
             # Include the current summarized Salsa trace in the exception for improved
             # error reporting.
-            rethrow(SalsaWrappedException(e, collect(get_trace(rt.immediate_dependencies_id).call_stack)))
+            rethrow(SalsaWrappedException(e, collect_stack(get_trace(rt.immediate_dependencies_id))))
         else
             rethrow()
         end
