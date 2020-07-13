@@ -10,6 +10,8 @@ using Base: @lock
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
+using Base: @lock
+
 const Revision = Int
 
 struct InputValue{T}
@@ -93,8 +95,7 @@ end
 function get_map_for_key(
     storage::DefaultStorage, ::KT, ::Type{RT}
 ) where {TT, KT<:DerivedKey{<:Any, TT}, RT}
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         return get!(storage.derived_function_maps, KT) do
             # PERFORMANCE NOTE: Only construct key inside this do-block to
             # ensure expensive constructor only called once, the first time.
@@ -107,8 +108,6 @@ function get_map_for_key(
             Dict{TT,DerivedValue{RT}}()
         # NOTE: Somehow, julia has trouble deducing this return value!
         end::Dict{TT,DerivedValue{RT}}  # This type assertion reduces allocations by 2!!
-    finally
-        unlock(storage.lock)
     end
 end
 function get_map_for_key(storage::DefaultStorage, ::InputKey)
@@ -127,14 +126,11 @@ function Salsa._previous_output_internal(
 
     previous_output = nothing
 
-    lock(storage.lock)
-    try
+    @lock storage.lock begin
         cache = get_map_for_key(storage, derived_key)
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
-    finally
-        unlock(storage.lock)
     end
 
     return previous_output
@@ -198,6 +194,9 @@ function Salsa._memoized_lookup_internal(
                 found_existing = true
                 unlock(storage.lock)
                 lock_held = false
+
+                # storage.current_revision should be monotonically increasing.
+                @debug_mode @assert (storage.current_revision >= existing_value.verified_at)
 
                 # NOTE: There is no race condition possible here, despite that the storage
                 # isn't locked, because all code that might bump `current_revision`
@@ -268,11 +267,8 @@ function Salsa._memoized_lookup_internal(
                     storage.current_revision,
                     storage.current_revision,
                 )
-                try
-                    lock(storage.lock)
+                @lock storage.lock begin
                     cache[args] = value
-                finally
-                    unlock(storage.lock)
                 end
             end # existing_value
         end # if value === nothing
@@ -318,11 +314,8 @@ function Salsa._memoized_lookup_internal(
 )
     storage = _storage(runtime)
     cache = get_map_for_key(storage, key)
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         return cache[key]
-    finally
-        unlock(storage.lock)
     end
 end
 
@@ -333,11 +326,7 @@ function Salsa.set_input!(
 )
     storage = _storage(runtime)
 
-    # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
-    # syntax causes an allocation here and doubles the runtime, but this manual try-finally
-    # does not, so it is preferable and we should stick with this.
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         cache = get_map_for_key(storage, key)
 
         if haskey(cache, key) && _value_isequal_to_cached(cache[key], value)
@@ -355,8 +344,6 @@ function Salsa.set_input!(
 
         cache[key] = InputValue(value, storage.current_revision)
         return nothing
-    finally
-        unlock(storage.lock)
     end
 end
 # This function barrier exists to allow specializing the `.value` on the type of
@@ -376,11 +363,7 @@ function Salsa.delete_input!(
     storage = _storage(runtime)
     cache = get_map_for_key(storage, key)
 
-    # NOTE: PERFORMANCE HAZARD: For some MYSTERY REASON, using the `lock(l) do ... end`
-    # syntax causes an allocation here and doubles the runtime, but this manual try-finally
-    # does not, so it is preferable and we should stick with this.
-    try
-        lock(storage.lock)
+    @lock storage.lock begin
         # It is an error to modify any inputs while derived functions are active, even
         # concurrently on other threads.
         @assert storage.derived_functions_active[] == 0
@@ -388,8 +371,6 @@ function Salsa.delete_input!(
         storage.current_revision += 1
         delete!(cache, key)
         return nothing
-    finally
-        unlock(storage.lock)
     end
 end
 

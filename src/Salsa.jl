@@ -9,7 +9,10 @@ end Salsa
 # This is the entirety of the Salsa API: Users create inputs and derived functions, and
 # access them through a Runtime instance.
 export @derived, @declare_input, Runtime, SalsaWrappedException
+
 import MacroTools
+import ExceptionUnwrapping  # For registering SalsaWrappedException as a wrapped exception.
+using Base: @lock
 
 include("Debug.jl")
 using .Debug
@@ -161,15 +164,24 @@ struct SalsaStackFrame
 end
 # For cycle detection in Debug-mode:
 # NOTE: The quadratic performance hazard here; this is to be disabled in production.
-stack_has_key(::Nothing, _) = false
-function stack_has_key(stack::SalsaStackFrame, key)
-    return stack.dp == key || stack_has_key(stack.next, key)
+function stack_has_key(stack::Union{SalsaStackFrame,Nothing}, key)
+    # NOTE: Important that this is implemented as a while-loop, not a recursive function
+    # because it may be called already deep in the stack, and this could effectively double
+    # the current stack height. (It seems that the tail-recursion optimization is missed
+    # with juila -O0, so it's better to do this manually.)
+    while stack !== nothing
+        if stack.dp == key
+            return true
+        end
+        stack = stack.next
+    end
+    return false
 end
 function Base.collect(stack::SalsaStackFrame)
     out = DependencyKey[stack.dp]
     while stack.next !== nothing
-        push!(out, stack.dp)
         stack = stack.next
+        push!(out, stack.dp)
     end
     return out
 end
@@ -227,15 +239,12 @@ mutable struct TraceOfDependencyKeys
 end
 
 function push_key!(trace::TraceOfDependencyKeys, depkey)
-    try
-        lock(trace.lock)
+    @lock trace.lock begin
         # Performance Optimization: De-duplicating Derived Function Traces
         if depkey ∉ trace.seen_deps
             push!(trace.ordered_deps, depkey)
             push!(trace.seen_deps, depkey)
         end
-    finally
-        unlock(trace.lock)
     end
     return nothing
 end
@@ -467,6 +476,12 @@ struct SalsaWrappedException{T} <: Base.Exception
     captured_exception::T
     salsa_trace::Vector{DependencyKey}
 end
+SalsaWrappedException(exc::T, trace) where {T} = SalsaWrappedException{T}(exc, trace)
+
+function ExceptionUnwrapping.unwrap_exception(exc::SalsaWrappedException)
+    exc.captured_exception
+end
+
 function Base.showerror(io::IO, exc::SalsaWrappedException)
     print(io, nameof(typeof(exc)))
     println(io, ": Error encountered while executing Salsa derived function:")
@@ -639,15 +654,22 @@ function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
     # whenever a user function throws an exception within Salsa.
     try
         return _memoized_lookup_internal(rt, dependency_key)
-        # catch e
-        # TODO: Re-enable this once we are comfortable with handling SalsaDerivedExceptions
-        #       throughout our codebase!
-        # # Wrap the exception in a Salsa exception (at the lowest layer only).
-        # if !(e isa SalsaWrappedException)
-        #     rethrow(SalsaWrappedException{typeof(e)}(e, collect(rt.call_stack)))
-        # else
-        #     rethrow()
-        # end
+    catch e
+        # Wrap all caught exceptions in a Salsa exception, so that we can print a summarized
+        # trace when errors are handled. Note that the `SalsaWrappedException`s can be
+        # handled and unwrapped via the ExceptionUnwrapping.jl package.
+        # (Convert the exception at the lowest layer, i.e. if it's not already converted.)
+        # NOTE: We use isa here, not has_wrapped_exception() because we want to ensure we
+        # throw a SalsaWrappedException for the _current_ salsa stack trace. So even if,
+        # e.g., this is a TaskFailedException wrapping a SalsaWrappedException, we still
+        # want to wrap that one more time to ensure we pretty print the whole stack. :)
+        if !(e isa SalsaWrappedException)
+            # Include the current summarized Salsa trace in the exception for improved
+            # error reporting.
+            rethrow(SalsaWrappedException(e, collect(get_trace(rt.immediate_dependencies_id).call_stack)))
+        else
+            rethrow()
+        end
     finally
         release_trace_id(rt.immediate_dependencies_id)
     end
@@ -673,12 +695,7 @@ logic, that reuses the previously computed value to compute the next value more 
 """
 function previous_output(rt::Salsa._TracingRuntime)
     dependency_key = get_trace(rt.immediate_dependencies_id).call_stack.dp
-    return _previous_output_internal(rt, dependency_key)
-    # if maybe_previous_value === nothing
-    #     return nothing
-    # else
-    #     return _unwrap_salsa_value(rt, maybe_previous_value)
-    # end
+    return _unwrap_salsa_value(rt, _previous_output_internal(rt, dependency_key))
 end
 
 function previous_output(::Salsa._TopLevelRuntime)

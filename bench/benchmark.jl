@@ -4,11 +4,11 @@ using BenchmarkTools
 @declare_input in1(rt, ::Int)::Int
 
 @derived function d1(rt, x::Int)
-    in1(rt, x) + 1
+    return in1(rt, x) + 1
 end
 
 @derived function d2(rt, x::Int)
-    d1(rt, x) + 1
+    return d1(rt, x) + 1
 end
 
 function simple_bench(rt::Runtime; N, iters)

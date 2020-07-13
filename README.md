@@ -7,6 +7,7 @@ A framework for on-demand, incremental computation via memoization, inspired by 
 
 - `@derived`
 - `@declare_input`
+- `Runtime()`
 
 
 ## Usage
@@ -41,19 +42,21 @@ Running x_plus_one.
 ```
 
 
-
-
 ## Credits
 This package was closely modelled off of the Rust
 [`salsa`](https://github.com/salsa-rs/salsa) framework, and takes heavy inspiration from
 that framework and [adapton](http://adapton.org/).
+
+We highly recommend this talk which motivates the need for incremental, demand driven
+computation, and for packages like Salsa:
+- [YouTube: Responsive compilers - Nicholas Matsakis - PLISS 2019](https://www.youtube.com/watch?v=N6b44kMS6OM&t=984s)
 
 ### Comparison with the Rust Salsa-rs framework
 The underlying principles are very similar to, and inspired from that package:
 It can be hard to write correct incremental programs by hand, so we provide macros
 that make it easy by automatically tracking dependencies between computations.
 
-If you are familiar with Salsa-rs, you'll see many things that are familiar and a few
-slightly more generic, and moved away from the database-oriented naming:
+If you are familiar with Salsa-rs, you'll see many things that are familiar, with
+slightly more generic names that are moved away from database-oriented naming:
 - **derived queries** => **`@derived` functions**
 - **query group** => **`Runtime`**
