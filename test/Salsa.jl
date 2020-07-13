@@ -318,35 +318,35 @@ end
 end
 
 
-const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
+# const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
 
-# NOTE: This test is testing internal aspects of the package, not the public API.
-@testset "Growing the trace pool freelist" begin
-    @derived function recursive_cause_pool_growth(rt, n::Int)::Int
-        # Verify that things still work after at least one pool growth
-        if n <= NUM_TRACE_TEST_CALLS
-            return recursive_cause_pool_growth(rt, n+1) + 1
-        else
-            return base_value(rt)
-        end
-    end
+# # NOTE: This test is testing internal aspects of the package, not the public API.
+# @testset "Growing the trace pool freelist" begin
+#     @derived function recursive_cause_pool_growth(rt, n::Int)::Int
+#         # Verify that things still work after at least one pool growth
+#         if n <= NUM_TRACE_TEST_CALLS
+#             return recursive_cause_pool_growth(rt, n+1) + 1
+#         else
+#             return base_value(rt)
+#         end
+#     end
 
-    @declare_input base_value(rt)::Int
+#     @declare_input base_value(rt)::Int
 
-    rt = new_test_rt()
+#     rt = new_test_rt()
 
-    set_base_value!(rt, 0)
+#     set_base_value!(rt, 0)
 
-    # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
-    # event of the trace pool + freelist.
-    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
+#     # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
+#     # event of the trace pool + freelist.
+#     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
 
-    # Now test that the dependencies were recorded correctly, and everything reruns
-    Salsa.new_epoch!(rt)
-    set_base_value!(rt, 1)
+#     # Now test that the dependencies were recorded correctly, and everything reruns
+#     Salsa.new_epoch!(rt)
+#     set_base_value!(rt, 1)
 
-    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
-end
+#     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
+# end
 
 @testset "task parallel derived functions invalidation" begin
     @declare_input i(_, ::Int)::Int
