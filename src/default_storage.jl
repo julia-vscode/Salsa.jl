@@ -227,14 +227,29 @@ function Salsa._memoized_lookup_internal(
         # At this point (value == nothing) if (and only if) the args are not
         # in the cache, OR if they are in the cache, but they are no longer valid.
         if should_run_user_func
-            # TODO: Optimization idea:
-            #   - If `existing_value !== nothing` here, we can avoid an allocation and a
-            #     copy by _swapping_ the `trace`'s `ordered_dependencies` with
-            #     `value.dependencies`, so that the deps are written in-place directly into
-            #     their final destination! :)
-
             @dbg_log_trace @info "invoking $key"
-            v = user_func(runtime, key.args...)
+            if found_existing
+                # Dependency array swap Optimization:
+                #   If we've already got an `existing_value` object here, we can avoid an
+                #   allocation and a copy by _swapping_ the `trace`'s `ordered_dependencies`
+                #   with `existing_value.dependencies`, so that the deps are written
+                #   in-place directly into their final destination! :)
+                trace = Salsa.get_trace(runtime.immediate_dependencies_id)
+                # Temporarily swap the dependency vectors while running user_func so the
+                # deps are recorded in-place. Note that we must swap them back at the end.
+                existing_value.dependencies, trace.ordered_deps =
+                    trace.ordered_deps, existing_value.dependencies
+                try
+                    v = user_func(runtime, key.args...)
+                finally
+                    # Swap back the dependency vectors so the vector isn't modified by
+                    # future traces.
+                    existing_value.dependencies, trace.ordered_deps =
+                        trace.ordered_deps, existing_value.dependencies
+                end
+            else
+                v = user_func(runtime, key.args...)
+            end
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable
             # structs`).
@@ -250,9 +265,19 @@ function Salsa._memoized_lookup_internal(
                 # Note that just because it computed the same value, it doesn't mean it
                 # computed it in the same way, so we need to update the list of
                 # dependencies as well.
-                existing_value.dependencies = collect_trace(runtime)
+                # HOWEVER, we can actually skip this, thanks to the swap-optimization above.
+                # existing_value.dependencies = collect_trace(runtime)
+
                 # We keep the old computed `.value` rather than the new value to help catch
                 # bugs with users' over-permissive `isequal()` functions earlier.
+                value = existing_value
+            elseif found_existing
+                # Reuse as much of the existing_value's structure to avoid allocations
+                existing_value.value = v
+                # We skip this thanks to the swap-optimization, above.
+                # existing_value.dependencies = collect_trace(runtime)
+                existing_value.changed_at = storage.current_revision
+                existing_value.verified_at = storage.current_revision
                 value = existing_value
             else
                 @dbg_log_trace @info "Computed new derived value for $key."
