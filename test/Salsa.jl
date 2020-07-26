@@ -161,9 +161,18 @@ end
 
 @testset "macro usage corner cases" begin
     @testset "where clauses" begin
-        #Salsa.@declare_input where_input(db, ::Type{T})::T where T
+        # A simple derived function with a where clause
+        Salsa.@derived where_func_x(db, x::T) where T = sizeof(T)
+        @test where_func_x(Runtime(), 0) == 8
+        @test where_func_x(Runtime(), Int8(0)) == 1
 
-        Salsa.@derived where_func(db, ::Type{T}) where T = sizeof(T)
+        # Derived function with typed argument
+        Salsa.@derived where_func_T(db, ::Type{T}) where T = sizeof(T)
+        # TODO: This is broken because typeof(Int) is DataType, but DataType is not <: Type
+        @test_broken where_func_T(Runtime(), Int) == 8
+
+        # Where clauses on inputs aren't yet supported. Do they even make sense?
+        #Salsa.@declare_input where_input(db, ::Type{T})::T where T
     end
 end
 
