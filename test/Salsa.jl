@@ -159,6 +159,14 @@ end
     @test x(rt, 1, "hi") == "ho"
 end
 
+@testset "macro usage corner cases" begin
+    @testset "where clauses" begin
+        #Salsa.@declare_input where_input(db, ::Type{T})::T where T
+
+        Salsa.@derived where_func(db, ::Type{T}) where T = sizeof(T)
+    end
+end
+
 @testset "inputs and derived functions support docstrings" begin
     @test @macroexpand(begin
         """ My Input """
