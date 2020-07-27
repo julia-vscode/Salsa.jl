@@ -586,7 +586,14 @@ macro derived(f)
     # for untyped args. `fullargs` will have all args w/ names and types.
     argnames = _argnames(args)
     argtypes = _argtypes(args)
-    fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i = 1:length(args)]
+    # Ensure that every argument is named, even unnamed parameters, so that they can be
+    # forwarded from the outer function into the inner one.
+    fullargs = deepcopy(args)
+    for (i,a) in enumerate(fullargs)
+        if a isa Expr && a.head == :(::) && length(a.args) == 1
+            pushfirst!(a.args, argnames[i])
+        end
+    end
 
     # Build the Key type once, in global scope, since it's expensive to construct at
     # runtime. This code will be included at global scope.
@@ -789,6 +796,10 @@ macro declare_input(e::Expr)
     # for untyped args. `fullargs` will have all args w/ names and types.
     argnames = _argnames(args)
     argtypes = _argtypes(args)
+    # NOTE: We don't support default values in inputs!
+    # TODO: Do we want to support this? We'd probably have to / want to change the order
+    # of the fields in `set_*!()`, so that the value comes first? Or maybe we could fake
+    # this by generating multiple methods, but frankly that seems a bit weird.
     fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i = 1:length(args)]
     # Put the filled-out args back into the original expression.
     args = callexpr.args[2:end] = fullargs

@@ -173,6 +173,21 @@ end
         # Where clauses on inputs aren't yet supported. Do they even make sense?
         #Salsa.@declare_input where_input(db, ::Type{T})::T where T
     end
+    @testset "default values - derived functions" begin
+        @declare_input source_text(rt, name::String)::String
+        @derived default_source(rt, name::String="stdlib") = source_text(rt, name)
+
+        rt = Runtime()
+        set_source_text!(rt, "stdlib", "hello")
+        @test default_source(rt) == default_source(rt, "stdlib") == "hello"
+    end
+    # Default values are not supported for inputs.
+    #@testset "default values - inputs" begin
+    #    @declare_input currency_value(rt, country="US")::Float64
+    #
+    #    rt = Runtime()
+    #    set_currency_value!(rt, 1.0)
+    #end
 end
 
 @testset "inputs and derived functions support docstrings" begin
