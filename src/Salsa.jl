@@ -609,8 +609,10 @@ macro derived(f)
 
         function $fname end
 
-        # (Use typeof function, not obj, because closures are not isbits)
-        const $derived_key_t_name = $DerivedKey{typeof($fname)}
+        # Compute this in a helper function to help the compiler elide building the type.
+        $Base.@inline $derived_key_t_name() =
+            # (Use typeof function, not obj, because closures are not isbits)
+            $DerivedKey{typeof($fname)}
     end
 
     # Rename user function.
@@ -623,7 +625,7 @@ macro derived(f)
     dict[:args] = fullargs
     dict[:body] = quote
         args = ($(argnames[2:end]...),)
-        key = $derived_key_t_name(args)
+        key = ($derived_key_t_name())(args)
         # TODO: Without this, derived functions are all type unstable, unless the user puts
         # a return type annotation on the function.. :( But we have to turn this off
         # because the compiler is hanging, taking >1 hour in Delve.
@@ -638,6 +640,7 @@ macro derived(f)
     dict[:name] = :($Salsa.get_user_function)
     dict[:args] = [:(rt::Runtime), :(::$DerivedKey{typeof($fname), <:Tuple{$(argtypes[2:end]...)}})]
     dict[:body] = userfname
+    delete!(dict, :rtype)
 
     get_user_function_def = MacroTools.combinedef(dict)
 
@@ -817,11 +820,12 @@ macro declare_input(e::Expr)
 
         function $inputname end
 
-        const $input_key_t_name =
+        # Compute this in a helper function to help the compiler elide building the type.
+        $Base.@inline $input_key_t_name() =
             $InputKey{typeof($inputname),
                 Tuple{$(argtypes[2:end]...)}}  # Will be Tuple{} if not 2+ args.
     end
-    dependency_key_expr = :($input_key_t_name(($(argnames[2:end]...),)))
+    dependency_key_expr = :($input_key_t_name()(($(argnames[2:end]...),)))
 
     getter_body = quote
         $memoized_lookup_unwrapped($runtime_arg, $dependency_key_expr)::$value_t
@@ -859,7 +863,7 @@ macro declare_input(e::Expr)
         # For type stability
         @inline function $Salsa.get_user_function(
             $(fullargs[1]),
-            ::$input_key_t_name,
+            ::$input_key_t_name(),
         )
             return $getter
         end
