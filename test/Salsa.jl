@@ -168,8 +168,7 @@ end
 
         # Derived function with typed argument
         Salsa.@derived where_func_T(db, ::Type{T}) where T = sizeof(T)
-        # TODO: This is broken because typeof(Int) is DataType, but DataType is not <: Type
-        @test_broken where_func_T(Runtime(), Int) == 8
+        @test where_func_T(Runtime(), Int) == 8
 
         # Where clauses on inputs aren't yet supported. Do they even make sense?
         #Salsa.@declare_input where_input(db, ::Type{T})::T where T

@@ -635,15 +635,6 @@ macro derived(f)
     end
     visible_func = MacroTools.combinedef(dict)
 
-    # Define get_user_function
-    # NOTE: Reuse the existing dict so that we inherit any where clause
-    dict[:name] = :($Salsa.get_user_function)
-    dict[:args] = [:(rt::Runtime), :(::$DerivedKey{typeof($fname), <:Tuple{$(argtypes[2:end]...)}})]
-    dict[:body] = userfname
-    delete!(dict, :rtype)
-
-    get_user_function_def = MacroTools.combinedef(dict)
-
     esc(
         quote
             $userfunc
@@ -657,7 +648,17 @@ macro derived(f)
             # Attach any docstring before this macrocall to the "visible" function.
             Core.@__doc__ $visible_func
 
-            $get_user_function_def
+            # Define get_user_function to provide the mapping from visible_func to userfunc,
+            # only if it doesn't exist (to avoid replacing an existing definition).
+            if !$Base.hasmethod(Salsa.get_user_function, Tuple{$Runtime, $derived_key_t_name()})
+                @inline function $Salsa.get_user_function(
+                    rt::$Runtime,
+                    ::$DerivedKey{typeof($fname)},
+                )
+                    return $userfname
+                end
+            end
+
 
             $fname
         end,
@@ -860,12 +861,16 @@ macro declare_input(e::Expr)
         $setter
         $deleter
 
-        # For type stability
-        @inline function $Salsa.get_user_function(
-            $(fullargs[1]),
-            ::$input_key_t_name(),
-        )
-            return $getter
+        # We also define this for inputs, for type stability.
+        # Define get_user_function to provide the mapping from visible_func to userfunc,
+        # only if it doesn't exist (to avoid replacing an existing definition).
+        if !$Base.hasmethod(Salsa.get_user_function, Tuple{$Runtime, $input_key_t_name()})
+            @inline function $Salsa.get_user_function(
+                rt::$Runtime,
+                ::$InputKey{typeof($inputname)},
+            )
+                return $inputname
+            end
         end
 
         # Return all the generated functions as a hint to REPL users what we're generating.
