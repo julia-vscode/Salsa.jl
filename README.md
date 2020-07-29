@@ -41,6 +41,12 @@ Running x_plus_one.
 11
 ```
 
+### Flags
+
+For maximum performance in deployed software, you can disable all runtime assertions and debug code by setting this environment variable before building Salsa: `SALSA_STATIC_DEBUG=false`.
+
+Or, for slightly less peformance gain, you can toggle it at runtime via `Salsa.Debug.disable_debug()`.
+
 
 ## Credits
 This package was closely modelled off of the Rust
