@@ -588,27 +588,31 @@ macro derived(f)
     argtypes = _argtypes(args)
     fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i = 1:length(args)]
 
-    # Get the argument types and return types for building the dictionary types.
-    # NOTE: I am PRETTY SURE it's okay to eval here. Function definitions already require
-    # argument *types* to be defined already, so evaling the types should be A OKAY!
-    args_typetuple = Tuple(Core.eval(__module__, t) for t in argtypes)
-    # TODO: Use the returntype to strongly type the DefaultStorage dictionaries!
-    returntype_assertion = Core.eval(__module__, get(dict, :rtype, Any))
-    TT = Tuple{args_typetuple[2:end]...}
-
-    # Assert that the @derived function starts with a runtime arg. The arg can be untyped,
-    # or unnamed, it just has to be at least able to hold a Runtime.
-    if !(
-        length(args_typetuple) >= 1 &&
-        # This allows any input like these: `_`, `rt`, `::Runtime`, `::MyRuntime`, `r::Any`
-        # And disallows inputs like these: `::Int`, `x::String`.
-        (args_typetuple[1] <: Runtime || args_typetuple[1] >: Runtime)
-    )
-        err_str = "@derived functions must take a `Runtime` as the first argument."
-        if length(args_typetuple) >= 1
-            err_str *= " Got unexpected $(args_typetuple[1]) instead."
+    # Build the Key type once, in global scope, since it's expensive to construct at
+    # runtime. This code will be included at global scope.
+    derived_key_t_name = gensym("derived_key_t")
+    type_helpers = quote
+        # Assert that the @derived function starts with a runtime arg. The arg can be untyped,
+        # or unnamed, it just has to be at least able to hold a Runtime.
+        if !(
+            $(length(argtypes) >= 1) &&
+            # This allows any input like these: `_`, `rt`, `::Runtime`, `::MyRuntime`, `r::Any`
+            # And disallows inputs like these: `::Int`, `x::String`.
+            ($(argtypes[1]) <: Runtime || $(argtypes[1]) >: Runtime)
+        )
+            err_str = "@derived functions must take a `Runtime` as the first argument."
+            if $(length(argtypes) >= 1)
+                err_str *= " Got unexpected $($(argtypes[1])) instead."
+            end
+            throw(ArgumentError(err_str))
         end
-        throw(ArgumentError(err_str))
+
+        function $fname end
+
+        # Compute this in a helper function to help the compiler elide building the type.
+        $Base.@inline $derived_key_t_name() =
+            # (Use typeof function, not obj, because closures are not isbits)
+            $DerivedKey{typeof($fname)}
     end
 
     # Rename user function.
@@ -616,14 +620,12 @@ macro derived(f)
     dict[:name] = userfname
     userfunc = MacroTools.combinedef(dict)
 
-    full_TT = Tuple{Runtime, args_typetuple[2:end]...}
-
     # Construct the originally named, visible function
     dict[:name] = fname
     dict[:args] = fullargs
     dict[:body] = quote
         args = ($(argnames[2:end]...),)
-        key = $DerivedKey{typeof($fname)}(args)
+        key = ($derived_key_t_name())(args)
         # TODO: Without this, derived functions are all type unstable, unless the user puts
         # a return type annotation on the function.. :( But we have to turn this off
         # because the compiler is hanging, taking >1 hour in Delve.
@@ -637,15 +639,26 @@ macro derived(f)
         quote
             $userfunc
 
+            # Precompute some expensive types
+            $type_helpers
+
+            # TODO: Use the returntype to strongly type the DefaultStorage dictionaries!
+            #const returntype_assertion = $(get(dict, :rtype, Any)))
+
             # Attach any docstring before this macrocall to the "visible" function.
             Core.@__doc__ $visible_func
 
-            function $Salsa.get_user_function(
-                $(fullargs[1]),
-                ::$DerivedKey{typeof($fname), <:Tuple{$(argtypes[2:end]...)}},
-            )
-                return $userfname
+            # Define get_user_function to provide the mapping from visible_func to userfunc,
+            # only if it doesn't exist (to avoid replacing an existing definition).
+            if !$Base.hasmethod(Salsa.get_user_function, Tuple{$Runtime, $derived_key_t_name()})
+                @inline function $Salsa.get_user_function(
+                    rt::$Runtime,
+                    ::$DerivedKey{typeof($fname)},
+                )
+                    return $userfname
+                end
             end
+
 
             $fname
         end,
@@ -786,42 +799,41 @@ macro declare_input(e::Expr)
     runtime_arg = args[1]
     implicit_value_arg = gensym("value")
 
-    # Eval all the argument types, to make sure they're valid.
-    args_typetuple = Tuple(Core.eval(__module__, t) for t in argtypes)
-    TT = Tuple{args_typetuple[2:end]...}  # Will be Tuple{} if not 2+ args.
-
-    # Assert that the @declare_input starts with a runtime arg. The arg can be untyped, or
-    # unnamed, it just has to be at least able to hold a Runtime.
-    if !(
-        length(args_typetuple) >= 1 &&
-        # This allows any input like these: `_`, `rt`, `::Runtime`, `::MyRuntime`, `r::Any`
-        # And disallows inputs like these: `::Int`, `x::String`.
-        (args_typetuple[1] <: Runtime || args_typetuple[1] >: Runtime)
-    )
-        err_str = "@declare_input functions must accept a `Runtime` as the first argument."
-        if length(args_typetuple) >= 1
-            err_str *= " Got unexpected $(args_typetuple[1]) instead."
+    # Build the Key type once, in global scope, since it's expensive to construct at
+    # runtime. (Use typeof function, not obj, because closures are not isbits)
+    # This code will be included at global scope.
+    input_key_t_name = gensym("input_key_t")
+    type_helpers = quote
+        # Assert that the @declare_input starts with a runtime arg. The arg can be untyped, or
+        # unnamed, it just has to be at least able to hold a Runtime.
+        if !(
+            $(length(argtypes) >= 1) &&
+            # This allows any input like these: `_`, `rt`, `::Runtime`, `::MyRuntime`, `r::Any`
+            # And disallows inputs like these: `::Int`, `x::String`.
+            ($(argtypes[1]) <: Runtime || $(argtypes[1]) >: Runtime)
+        )
+            err_str = "@declare_input functions must accept a `Runtime` as the first argument."
+            if $(length(argtypes) >= 1)
+                err_str *= " Got unexpected $($(argtypes[1])) instead."
+            end
+            throw(ArgumentError(err_str))
         end
-        throw(ArgumentError(err_str))
+
+        function $inputname end
+
+        # Compute this in a helper function to help the compiler elide building the type.
+        $Base.@inline $input_key_t_name() =
+            $InputKey{typeof($inputname),
+                Tuple{$(argtypes[2:end]...)}}  # Will be Tuple{} if not 2+ args.
     end
+    dependency_key_expr = :($input_key_t_name()(($(argnames[2:end]...),)))
 
-    # If we've made it here, there shouldn't be any reason the definitions below will fail,
-    # so it's okay to pre-declare the getter function type, which we use in the InputKey,
-    # below.
-    getter_f = @eval __module__ function $inputname end
-
-    # Build the Key type here, at macro parse time, since it's expensive to construct at runtime.
-    # (Use type of function, not obj, because closures are not isbits)
-    input_key_t = InputKey{typeof(getter_f),TT}
-    dependency_key_expr = :($input_key_t(($(argnames[2:end]...),)))
     getter_body = quote
         $memoized_lookup_unwrapped($runtime_arg, $dependency_key_expr)::$value_t
     end
-
     setter_body = quote
         $Salsa._safe_setter_body($runtime_arg, $dependency_key_expr, $implicit_value_arg)
     end
-
     deleter_body = quote
         $Salsa._safe_deleter_body($runtime_arg, $dependency_key_expr)
     end
@@ -842,16 +854,23 @@ macro declare_input(e::Expr)
     setter = Expr(:function, callexpr, setter_body)
 
     esc(quote
+        # Precompute some expensive types
+        $type_helpers
+
         Core.@__doc__ $getter
         $setter
         $deleter
 
-        # For type stability
-        @inline function $Salsa.get_user_function(
-            $(fullargs[1]),
-            ::$input_key_t,
-        )
-            return $getter
+        # We also define this for inputs, for type stability.
+        # Define get_user_function to provide the mapping from visible_func to userfunc,
+        # only if it doesn't exist (to avoid replacing an existing definition).
+        if !$Base.hasmethod(Salsa.get_user_function, Tuple{$Runtime, $input_key_t_name()})
+            @inline function $Salsa.get_user_function(
+                rt::$Runtime,
+                ::$InputKey{typeof($inputname)},
+            )
+                return $inputname
+            end
         end
 
         # Return all the generated functions as a hint to REPL users what we're generating.

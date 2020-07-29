@@ -159,6 +159,22 @@ end
     @test x(rt, 1, "hi") == "ho"
 end
 
+@testset "macro usage corner cases" begin
+    @testset "where clauses" begin
+        # A simple derived function with a where clause
+        Salsa.@derived where_func_x(db, x::T) where T = sizeof(T)
+        @test where_func_x(Runtime(), 0) == 8
+        @test where_func_x(Runtime(), Int8(0)) == 1
+
+        # Derived function with typed argument
+        Salsa.@derived where_func_T(db, ::Type{T}) where T = sizeof(T)
+        @test where_func_T(Runtime(), Int) == 8
+
+        # Where clauses on inputs aren't yet supported. Do they even make sense?
+        #Salsa.@declare_input where_input(db, ::Type{T})::T where T
+    end
+end
+
 @testset "inputs and derived functions support docstrings" begin
     @test @macroexpand(begin
         """ My Input """
