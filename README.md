@@ -9,6 +9,14 @@ A framework for on-demand, incremental computation via memoization, inspired by 
 - `@declare_input`
 - `Runtime()`
 
+## Description
+
+Salsa is:
+- a memoization framework, with
+- runtime dependency tracking, so that
+- you can update some inputs and (performantly) automatically invalidate the affected caches.
+
+It provides a framework for automating away the potential pitfalls of cache invalidation, by automatically detecting dependencies between parts of your code (`@derived` functions), and using the detected dependency graph to propagate invalidations when facts about the world have changed.
 
 ## Usage
 
