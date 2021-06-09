@@ -2,11 +2,36 @@
 
 using Test
 using Salsa
-using Salsa: Runtime, InputKey, DependencyKey, SalsaWrappedException
+using Salsa: Runtime, InputKey, DerivedKey, DependencyKey, DerivedFunctionException,
+    DependencyCycleException
 
 # NOTE: This test file expects `new_test_rt([ctx,])` to be defined before it is called,
 # which is used to construct new Runtime() instances for the tests. This is so that
 # you can run these tests for abitrary Runtime types.
+
+@testset "hashing" begin
+
+    # Here we make sure that all parts of a dependency key are incorporated into its hash.
+
+    function a end
+    function b end
+
+    input_key_a1 = InputKey{typeof(a)}(("123",))
+    input_key_a2 = InputKey{typeof(a)}((0,))
+    input_key_b = InputKey{typeof(b)}(("123",))
+
+    @test hash(input_key_a1) != hash(input_key_a2)
+    @test hash(input_key_a1) != hash(input_key_b)
+
+    derived_key_a1 = DerivedKey{typeof(a)}(("123",))
+    derived_key_a2 = DerivedKey{typeof(a)}((0,))
+    derived_key_b = DerivedKey{typeof(b)}((123,))
+
+    @test hash(derived_key_a1) != hash(input_key_a1)
+    @test hash(derived_key_a2) != hash(input_key_a2)
+    @test hash(derived_key_a1) != hash(derived_key_a2)
+    @test hash(derived_key_a1) != hash(derived_key_b)
+end
 
 @testset "usage" begin
     rt = new_test_rt()
@@ -32,7 +57,7 @@ using Salsa: Runtime, InputKey, DependencyKey, SalsaWrappedException
 
 
     s = new_test_rt()
-    @test_throws SalsaWrappedException{KeyError} mymap(s, "hello", 2)
+    @test_throws DerivedFunctionException{KeyError} mymap(s, "hello", 2)
     set_mymap!(s, "hello", 2, 10)
     @test mymap(s, "hello", 2) === 10
 
@@ -215,6 +240,15 @@ module ErrorHandlingTests
     Salsa.@derived function val_times_sqrt(rt, key)
         get_val(rt, key) * square_root(rt)
     end
+    Salsa.@derived function cycle_oh_no(rt, key)
+        cycle_oh_no(rt, key) * 2
+    end
+    Salsa.@derived function inconspicuous(rt, key)
+        subtle_cycle(rt, key) + 10
+    end
+    Salsa.@derived function subtle_cycle(rt, key)
+        inconspicuous(rt, key) * 2
+    end
 end
 
 @testset "Robust to derived functions that throw errors" begin
@@ -228,12 +262,26 @@ end
     # Setting a value that will cause square_root() to throw an Exception
     Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, -1)
-    @test_throws SalsaWrappedException{DomainError} ErrorHandlingTests.square_root(db)
+    @test_throws DerivedFunctionException{DomainError} ErrorHandlingTests.square_root(db)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     Salsa.new_epoch!(db)
     ErrorHandlingTests.set_val!(db, 1)
     @test ErrorHandlingTests.square_root(db) == 1
+end
+
+@testset "Cycle detection" begin
+    Salsa.@debug_mode begin
+        db = new_test_rt()
+
+        # Setting a value that should work as expected
+        Salsa.new_epoch!(db)
+        ErrorHandlingTests.set_val!(db, 1)
+        @test ErrorHandlingTests.square_root(db) == 1
+
+        @test_throws DerivedFunctionException{DependencyCycleException} ErrorHandlingTests.cycle_oh_no(db, 1)
+        @test_throws DerivedFunctionException{DependencyCycleException} ErrorHandlingTests.subtle_cycle(db, 1)
+    end
 end
 
 @testset "Multi-level derived functions that throw errors #1180" begin
@@ -245,7 +293,7 @@ end
     ErrorHandlingTests.set_val!(db, -1)
     ErrorHandlingTests.set_map!(db, 1, 2)
     # Attempts 2 * sqrt(-1), and throws an error
-    @test_throws SalsaWrappedException{DomainError} ErrorHandlingTests.val_times_sqrt(db, 1)
+    @test_throws DerivedFunctionException{DomainError} ErrorHandlingTests.val_times_sqrt(db, 1)
 
     # Now test that it's recovered gracefully from the error, and we can still use the DB
     Salsa.new_epoch!(db)
@@ -256,7 +304,7 @@ end
     # Now check that we also recover from KeyErrors when reading from a map:
     Salsa.new_epoch!(db)
     # Throw error (No key 100):
-    @test_throws SalsaWrappedException{KeyError} ErrorHandlingTests.val_times_sqrt(db, 100)
+    @test_throws DerivedFunctionException{KeyError} ErrorHandlingTests.val_times_sqrt(db, 100)
     # But this call still works:
     @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
 end
@@ -288,7 +336,7 @@ end
     # Delete student only from student_grade but leave in all_student_ids (a programming error)
     Salsa.new_epoch!(rt)
     delete_student_grade!(rt, 2)
-    @test_throws SalsaWrappedException{KeyError} average_grade(rt)
+    @test_throws DerivedFunctionException{KeyError} average_grade(rt)
 end
 
 struct LoggingContext
@@ -349,35 +397,35 @@ end
 end
 
 
-# const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
+const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
 
-# # NOTE: This test is testing internal aspects of the package, not the public API.
-# @testset "Growing the trace pool freelist" begin
-#     @derived function recursive_cause_pool_growth(rt, n::Int)::Int
-#         # Verify that things still work after at least one pool growth
-#         if n <= NUM_TRACE_TEST_CALLS
-#             return recursive_cause_pool_growth(rt, n+1) + 1
-#         else
-#             return base_value(rt)
-#         end
-#     end
+# NOTE: This test is testing internal aspects of the package, not the public API.
+@testset "Growing the trace pool freelist" begin
+    @derived function recursive_cause_pool_growth(rt, n::Int)::Int
+        # Verify that things still work after at least one pool growth
+        if n <= NUM_TRACE_TEST_CALLS
+            return recursive_cause_pool_growth(rt, n+1) + 1
+        else
+            return base_value(rt)
+        end
+    end
 
-#     @declare_input base_value(rt)::Int
+    @declare_input base_value(rt)::Int
 
-#     rt = new_test_rt()
+    rt = new_test_rt()
 
-#     set_base_value!(rt, 0)
+    set_base_value!(rt, 0)
 
-#     # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
-#     # event of the trace pool + freelist.
-#     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
+    # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
+    # event of the trace pool + freelist.
+    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
 
-#     # Now test that the dependencies were recorded correctly, and everything reruns
-#     Salsa.new_epoch!(rt)
-#     set_base_value!(rt, 1)
+    # Now test that the dependencies were recorded correctly, and everything reruns
+    Salsa.new_epoch!(rt)
+    set_base_value!(rt, 1)
 
-#     @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
-# end
+    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
+end
 
 @testset "task parallel derived functions invalidation" begin
     @declare_input i(_, ::Int)::Int
