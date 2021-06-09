@@ -417,4 +417,18 @@ end
 function Salsa.new_epoch!(runtime::Salsa.RuntimeWithStorage{DefaultStorage})
 end
 
+
+#= Debug Inspection =#
+
+# Returns two dicts (inputs: K=>V and derived_vals: K=>(V, K[deps...]))
+function Salsa.Inspect.all_inputs_and_derived_vals(st::DefaultStorage)
+    inputs = st.inputs_map
+    derived_vals = Dict(
+        key_t(k) => (v.value, v.dependencies)
+        for (key_t,m) in st.derived_function_maps
+        for (k,v) in m
+    )
+    return inputs, derived_vals
+end
+
 end  # module
