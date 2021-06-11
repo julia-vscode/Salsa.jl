@@ -70,25 +70,22 @@ macro derived(f)
         end
     end
 
-    # Get the argument types and return types for building the dictionary types.
+    # Get the type of the first argument to verify it is a runtime sub- or supertype.
     # NOTE: I am PRETTY SURE it's okay to eval here. Function definitions already require
     # argument *types* to be defined already, so evaling the types should be A OKAY!
-    args_typetuple = Tuple(Core.eval(__module__, t) for t in argtypes)
-    # TODO: Use the returntype to strongly type the DefaultStorage dictionaries!
-    returntype_assertion = Core.eval(__module__, get(dict, :rtype, Any))
-    TT = Tuple{args_typetuple[2:end]...}
+    FirstArgType = Core.eval(__module__, first(argtypes))
 
     # Assert that the @derived function starts with a runtime arg. The arg can be untyped,
     # or unnamed, it just has to be at least able to hold a Runtime.
     if !(
-        length(args_typetuple) >= 1 &&
+        length(argtypes) >= 1 &&
         # This allows any input like these: `_`, `rt`, `::Runtime`, `::MyRuntime`, `r::Any`
         # And disallows inputs like these: `::Int`, `x::String`.
-        (args_typetuple[1] <: Runtime || args_typetuple[1] >: Runtime)
+        (FirstArgType <: Runtime || FirstArgType >: Runtime)
     )
         err_str = "@derived functions must take a `Runtime` as the first argument."
-        if length(args_typetuple) >= 1
-            err_str *= " Got unexpected $(args_typetuple[1]) instead."
+        if length(argtypes) >= 1
+            err_str *= " Got unexpected $(FirstArgType) instead."
         end
         throw(ArgumentError(err_str))
     end
@@ -97,8 +94,6 @@ macro derived(f)
     userfname = Symbol("%%__user_$fname")
     dict[:name] = userfname
     userfunc = MacroTools.combinedef(dict)
-
-    full_TT = Tuple{Runtime, args_typetuple[2:end]...}
 
     # Construct the originally named, visible function
     dict[:name] = fname
@@ -122,9 +117,9 @@ macro derived(f)
             # Attach any docstring before this macrocall to the "visible" function.
             Core.@__doc__ $visible_func
 
-            function $Salsa.get_user_function(
+            @inline function $Salsa.get_user_function(
                 $(fullargs[1]),
-                ::$DerivedKey{typeof($fname), <:Tuple{$(argtypes[2:end]...)}},
+                ::$DerivedKey{typeof($fname)},
             )
                 return $userfname
             end
