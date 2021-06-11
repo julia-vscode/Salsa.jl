@@ -3,7 +3,7 @@ module _DefaultSalsaStorage
 import ..Salsa
 using ..Salsa:
     Runtime, AbstractSalsaStorage, memoized_lookup, get_user_function, collect_trace
-using ..Salsa: DependencyKey, DerivedKey, InputKey, _storage, RuntimeWithStorage,
+using ..Salsa: DependencyKey, DerivedKey, InputKey, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
 using Base.Threads: Atomic, atomic_add!, atomic_sub!
 using Base: @lock
@@ -127,7 +127,7 @@ function Salsa._previous_output_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
     key::DerivedKey,
 )
-    storage = _storage(runtime)
+    storage = Salsa.storage(runtime)
     derived_key, args = key, key.args
 
     previous_output = nothing
@@ -147,7 +147,7 @@ function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
     key::DerivedKey{F,TT},
 )  where {F,TT}
-    storage = _storage(runtime)
+    storage = Salsa.storage(runtime)
     try  # For storage.derived_functions_active
         atomic_add!(storage.derived_functions_active, 1)
 
@@ -178,7 +178,7 @@ function Salsa._memoized_lookup_internal(
         # violations, e.g. overwriting newer values with outdated results.
         lock_held::Bool = false
         local cache
-        trace = Salsa.get_trace(runtime.immediate_dependencies_id) :: Salsa.TraceOfDependencyKeys
+        trace = Salsa.trace(runtime) :: Salsa.TraceOfDependencyKeys
         try
             lock(storage.lock)
             lock_held = true
@@ -337,11 +337,22 @@ end
 
 # --- Inputs --------------------------------------------------------------------------
 
+function Salsa._unmemoized_input_lookup_internal(
+    runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
+    key::InputKey,
+)
+    storage = Salsa.storage(runtime)
+    cache = get_map_for_key(storage, key)
+    @lock storage.lock begin
+        return get(cache, key, nothing)
+    end
+end
+
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
     key::InputKey,
 )
-    storage = _storage(runtime)
+    storage = Salsa.storage(runtime)
     cache = get_map_for_key(storage, key)
     @lock storage.lock begin
         return cache[key]
@@ -353,7 +364,7 @@ function Salsa.set_input!(
     key::InputKey,
     value,
 )
-    storage = _storage(runtime)
+    storage = Salsa.storage(runtime)
 
     @lock storage.lock begin
         cache = get_map_for_key(storage, key)
@@ -389,7 +400,7 @@ function Salsa.delete_input!(
     key::InputKey,
 )
     @dbg_log_trace @info "Deleting input $key"
-    storage = _storage(runtime)
+    storage = Salsa.storage(runtime)
     cache = get_map_for_key(storage, key)
 
     @lock storage.lock begin
@@ -404,6 +415,20 @@ function Salsa.delete_input!(
 end
 
 function Salsa.new_epoch!(runtime::Salsa.RuntimeWithStorage{DefaultStorage})
+end
+
+
+#= Debug Inspection =#
+
+# Returns two dicts (inputs: K=>V and derived_vals: K=>(V, K[deps...]))
+function Salsa.Inspect.all_inputs_and_derived_vals(st::DefaultStorage)
+    inputs = st.inputs_map
+    derived_vals = Dict(
+        key_t(k) => (v.value, v.dependencies)
+        for (key_t,m) in st.derived_function_maps
+        for (k,v) in m
+    )
+    return inputs, derived_vals
 end
 
 end  # module

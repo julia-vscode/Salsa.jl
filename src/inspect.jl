@@ -1,6 +1,17 @@
 module Inspect
 using ..Salsa
-using .Salsa._DefaultSalsaStorage: DefaultStorage
+using ..Salsa: AbstractSalsaStorage
+
+"""
+    Salsa.Inspect.all_inputs_and_derived_vals(st::SalsaStorage)
+
+Should be implemented by salsa storage backends, to support generating a dependency graph
+from the current state of a Salsa Runtime.
+
+Returns two dicts (inputs: K=>V and derived_vals: K=>(V, K[deps...]))
+"""
+function all_inputs_and_derived_vals end
+
 
 # Crude code to dump a .dot (graphviz) version of the Salsa Node tree.
 # For debugging / illustration purposes - not intended to be reachable from production
@@ -57,8 +68,8 @@ function build_graph(rt::Salsa.Runtime; module_boxes=false)
         println(io, "{")
         println(io, "rank=sink;")
     end
-    for (input_key_func, name) in inputs
-        println(io, """$(vertex_name(input_key_func)) [label="$name"]""")
+    for (input_key, name) in inputs
+        println(io, """$(vertex_name(input_key)) [label=$(repr(name))]""")
     end
     if !module_boxes
         println(io, "}")
@@ -75,46 +86,59 @@ function build_graph(rt::Salsa.Runtime; module_boxes=false)
     return String(take!(io))
 end
 
-function _build_graph(io::IO, st::DefaultStorage, seen::_IdSet, modules_map::Dict, out_edges::Dict, out_inputs::Dict)
-    for (input_key,v) in st.inputs_map
-        F = key_function(input_key)
+function _build_graph(io::IO, st::AbstractSalsaStorage, seen::_IdSet, modules_map::Dict, out_edges::Dict, out_inputs::Dict)
+    inputs, derived_vals = all_inputs_and_derived_vals(st)
+    for (k,v) in inputs
+        F = key_func_type(k)
         m = F.name.module
-        out_inputs[F] = "@input $(nameof(F.instance))"
-        push!(get!(modules_map, m, Set([])), F)
+        out_inputs[k] = "@input $(nameof(F.instance))"
+        push!(get!(modules_map, m, Set([])), k)
     end
 
-    for (derived_key_t,derived_map) in st.derived_function_maps
-        _build_graph(io, st, derived_key_t, derived_map, seen, modules_map, out_edges)
+    seen_key_types = Set{Any}()
+    for (k,(v, deps)) in derived_vals
+        K = key_identifier(k)
+        if !(K ∈ seen_key_types)
+            push!(seen_key_types, K)
+            key_str = _derived_key_as_call_str(k)
+            println(io, "$(vertex_name(k)) [shape=rect,label=$(repr(key_str))]")
+            F = key_func_type(k)
+            m = F.name.module
+            push!(get!(modules_map, m, Set([])), k)
+        end
+        _build_graph(io, st, k, v, deps, seen, modules_map, out_edges)
     end
 end
 
-key_function(::Union{Salsa.InputKey{F}, Salsa.DerivedKey{F}}) where F = F
-function vertex_name(::Salsa.InputKey{F}) where F
-    return vertex_name(F)
+key_func_type(::Union{Salsa.InputKey{F},Salsa.DerivedKey{F}}) where F = F
+# TODO: Change this to use key values, not just types, for unrolling the graph.
+key_identifier(k::Union{Salsa.InputKey,Salsa.DerivedKey}) = typeof(k)
+
+# TODO: Change these to use key values, not just types, for unrolling the graph.
+function vertex_name(k::Salsa.InputKey)
+    return vertex_name(typeof(k))
+end
+function vertex_name(k::Salsa.DerivedKey)
+    return vertex_name(typeof(k))
 end
 function vertex_name(x::Any)::String
     return "v$(objectid(x))"
 end
 
-function _build_graph(io, st::DefaultStorage, derived_key_t::Type{<:Salsa.DerivedKey{F,TT}}, derived_map::Dict,
-     seen::_IdSet{Any}, modules_map::Dict{Module,Set}, edges::Dict{Pair, Int}) where {F,TT}
-    in(derived_key_t, seen) && return
-    push!(seen, derived_key_t)
-    m = methods(F.instance).mt.module
-    push!(get!(modules_map, m, Set([])), F)
-    key_str = _derived_key_as_call_str(derived_key_t)
-    println(io, "$(vertex_name(F)) [shape=rect,label=\"$key_str\"]")
-    for (k,v) in derived_map
-        for d in v.dependencies
-            edge = (F) => (key_function(d))
-            count = get!(edges, edge, 0) + 1
-            edges[edge] = count
-        end
+function _build_graph(io, st::AbstractSalsaStorage,
+        derived_key, v, deps::Vector,  # Vector of salsa keys
+        seen::_IdSet{Any}, modules_map::Dict{Module,Set}, edges::Dict{Pair, Int}) where {F,TT}
+    in(derived_key, seen) && return
+    push!(seen, derived_key)
+    for d in deps
+        edge = key_identifier(derived_key) => key_identifier(d)
+        count = get!(edges, edge, 0) + 1
+        edges[edge] = count
     end
     #_build_graph(io, s.leaf_node, seen)
 end
 
-function _derived_key_as_call_str(::Type{<:Salsa.DerivedKey{F,TT}})::String where {F,TT}
+function _derived_key_as_call_str(key::Salsa.DerivedKey{F,TT})::String where {F,TT}
     f = isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
     argsexprs = [
         :rt,
