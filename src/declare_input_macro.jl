@@ -47,6 +47,10 @@ macro declare_input(e::Expr)
     # for untyped args. `fullargs` will have all args w/ names and types.
     argnames = _argnames(args)
     argtypes = _argtypes(args)
+    # NOTE: We don't support default values in inputs!
+    # TODO: Do we want to support this? We'd probably have to / want to change the order of
+    # the fields in `set_*!()`, so that the value comes first? Or maybe we could fake this
+    # by generating multiple methods, but frankly that seems a bit weird.
     fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i = 1:length(args)]
     # Put the filled-out args back into the original expression.
     args = callexpr.args[2:end] = fullargs

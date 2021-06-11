@@ -61,7 +61,14 @@ macro derived(f)
     # for untyped args. `fullargs` will have all args w/ names and types.
     argnames = _argnames(args)
     argtypes = _argtypes(args)
-    fullargs = [Expr(:(::), argnames[i], argtypes[i]) for i = 1:length(args)]
+    # Ensure that every argument is named, even unnamed parameters, so that they can be
+    # forwarded from the outer function into the inner one.
+    fullargs = deepcopy(args)
+    for (i,a) in enumerate(fullargs)
+        if a isa Expr && a.head == :(::) && length(a.args) == 1
+            pushfirst!(a.args, argnames[i])
+        end
+    end
 
     # Get the argument types and return types for building the dictionary types.
     # NOTE: I am PRETTY SURE it's okay to eval here. Function definitions already require
