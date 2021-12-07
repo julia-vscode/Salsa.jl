@@ -5,10 +5,6 @@
 A framework for on-demand, incremental computation via memoization, inspired by Rust lang's
 [salsa-rs/salsa](https://github.com/salsa-rs/salsa).
 
-- `@derived`
-- `@declare_input`
-- `Runtime()`
-
 [⏯ Youtube | JuliaCon 2020 | Salsa.jl](https://youtu.be/0uzrH2Ee494)
 
 ## Description
@@ -21,6 +17,10 @@ Salsa is:
 It provides a framework for automating away the potential pitfalls of cache invalidation, by automatically detecting dependencies between parts of your code (`@derived` functions), and using the detected dependency graph to propagate invalidations when facts about the world have changed.
 
 ## Usage
+
+- `@derived`
+- `@declare_input`
+- `Runtime()`
 
 ```julia
 julia> @declare_input x(rt)::Int
