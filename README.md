@@ -9,6 +9,8 @@ A framework for on-demand, incremental computation via memoization, inspired by 
 - `@declare_input`
 - `Runtime()`
 
+[⏯ Youtube | JuliaCon 2020 | Salsa.jl](https://youtu.be/0uzrH2Ee494)
+
 ## Description
 
 Salsa is:
