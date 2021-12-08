@@ -24,6 +24,7 @@ It provides a framework for automating away the potential pitfalls of cache inva
 
 ```julia
 julia> using Salsa
+
 julia> @declare_input x(rt)::Int
 (x, set_x!, delete_x!)
 
