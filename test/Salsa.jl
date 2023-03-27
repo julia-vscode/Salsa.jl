@@ -383,7 +383,9 @@ end
 
     rt = new_test_rt()
     # Initialize the inputs
-    I = 1000  # Number of concurrent tasks scheduled
+    # XXX DO NOT make `I` too big, e.g. `I = 1000`, otherwise `_names::NTuple{I,Symbol}` may
+    # cause the internal compiler error (see https://github.com/JuliaLang/julia/issues/38364)
+    I = 100 # Number of concurrent tasks scheduled
     _names = Tuple(Symbol("range$i") for i in 1:I)
     N = 10_000
 
