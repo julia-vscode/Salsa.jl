@@ -1,15 +1,35 @@
-# Inline debugging tests
+@testmodule SalsaSetup begin
+    import Salsa
+    using Salsa: Runtime, @derived
 
-using Test
-using Salsa
-using Salsa: Runtime, InputKey, DerivedKey, DependencyKey, DerivedFunctionException,
-    DependencyCycleException
+    # The Salsa.jl test is configurable to run with arbitrary Runtime instances, by
+    # providing your own implementation of this function before running `"test/Salsa.jl"`.
+    new_test_rt() = Runtime()
+    new_test_rt(ctx::Context) where Context = Runtime{Context}(ctx)
+
+    @derived function foofunc(db, x::Int, y::Vector{Int}) :: Int
+        sum([1 + x , y...])
+    end
+
+    struct LoggingContext
+        io::IOBuffer
+    end
+
+    @derived function add(rt::Runtime{LoggingContext}, a,b)
+        out = a+b
+        println(Salsa.context(rt).io, "$out")
+        return out
+    end
+
+    const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
+end
 
 # NOTE: This test file expects `new_test_rt([ctx,])` to be defined before it is called,
 # which is used to construct new Runtime() instances for the tests. This is so that
 # you can run these tests for abitrary Runtime types.
 
-@testset "hashing" begin
+@testitem "hashing" begin
+    using Salsa: InputKey, DerivedKey
 
     # Here we make sure that all parts of a dependency key are incorporated into its hash.
 
@@ -33,7 +53,9 @@ using Salsa: Runtime, InputKey, DerivedKey, DependencyKey, DerivedFunctionExcept
     @test hash(derived_key_a1) != hash(derived_key_b)
 end
 
-@testset "usage" begin
+@testitem "usage" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     rt = new_test_rt()
 
     # Simple function with no inputs
@@ -76,7 +98,9 @@ end
     @test timesed(s, 2,2) === 12
 end
 
-@testset "Early Exit Optimization" begin
+@testitem "Early Exit Optimization" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     s = new_test_rt()
     @declare_input x(rt)::Int
     @declare_input y(rt)::Int
@@ -128,17 +152,12 @@ end
 end
 
 
-println()
-
-
 ###########################
 # Simple API usage
 
-@derived function foofunc(db, x::Int, y::Vector{Int}) :: Int
-    sum([1 + x , y...])
-end
+@testitem "Simple API Usage" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
 
-@testset "Simple API Usage" begin
     @derived function foofunc(db, x::Int, y::Vector{Int}) :: Int
         sum([1 + x , y...])
     end
@@ -155,7 +174,9 @@ end
     @test x(rt) == 1
 end
 
-@testset "Multiple inputs different types same runtime same key" begin
+@testitem "Multiple inputs different types same runtime same key" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     @declare_input a(rt, x::Int)::String
     @declare_input b(rt, x::Int)::Int
 
@@ -166,7 +187,10 @@ end
     @test a(rt, 1) == "hi"
     @test b(rt, 1) == 10
 end
-@testset "Multiple methods" begin
+
+@testitem "Multiple methods" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     @declare_input x(rt)::Int
     @declare_input x(rt, x)::Any
     @declare_input x(rt, x::Int)::Int
@@ -184,7 +208,7 @@ end
     @test x(rt, 1, "hi") == "ho"
 end
 
-@testset "macro usage corner cases" begin
+@testitem "macro usage corner cases" begin
     @testset "where clauses" begin
         # A simple derived function with a where clause
         Salsa.@derived where_func_x(db, x::T) where T = sizeof(T)
@@ -215,7 +239,7 @@ end
     #end
 end
 
-@testset "inputs and derived functions support docstrings" begin
+@testitem "inputs and derived functions support docstrings" begin
     @test @macroexpand(begin
         """ My Input """
         Salsa.@declare_input manifest(rt)::Set{Int}
@@ -225,7 +249,7 @@ end
     end) isa Expr
 end
 
-module ErrorHandlingTests
+@testmodule ErrorHandlingTests begin
     using Salsa
 
     @declare_input val(rt) :: Int
@@ -251,7 +275,9 @@ module ErrorHandlingTests
     end
 end
 
-@testset "Robust to derived functions that throw errors" begin
+@testitem "Robust to derived functions that throw errors" setup=[SalsaSetup, ErrorHandlingTests] begin
+    using .SalsaSetup: new_test_rt
+
     db = new_test_rt()
 
     # Setting a value that should work as expected
@@ -270,7 +296,10 @@ end
     @test ErrorHandlingTests.square_root(db) == 1
 end
 
-@testset "Cycle detection" begin
+@testitem "Cycle detection" setup=[SalsaSetup, ErrorHandlingTests] begin
+    using Salsa: DependencyCycleException
+    using .SalsaSetup: new_test_rt
+
     Salsa.@debug_mode begin
         db = new_test_rt()
 
@@ -284,7 +313,9 @@ end
     end
 end
 
-@testset "Multi-level derived functions that throw errors #1180" begin
+@testitem "Multi-level derived functions that throw errors #1180" setup=[SalsaSetup, ErrorHandlingTests] begin
+    using .SalsaSetup: new_test_rt
+
     db = new_test_rt()
 
     # Cause `square_root()` to throw an exeception, when being called from within another
@@ -309,7 +340,9 @@ end
     @test ErrorHandlingTests.val_times_sqrt(db, 1) == 2  # 2 * sqrt(1)
 end
 
-@testset "Key Deletions" begin
+@testitem "Key Deletions" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     @declare_input all_student_ids(rt)::Set{Int}  # TODO: Use an immutable type
     @declare_input student_grade(rt, id::Int)::Float64
 
@@ -339,15 +372,10 @@ end
     @test_throws DerivedFunctionException{KeyError} average_grade(rt)
 end
 
-struct LoggingContext
-    io::IOBuffer
-end
-@derived function add(rt::Runtime{LoggingContext}, a,b)
-    out = a+b
-    println(Salsa.context(rt).io, "$out")
-    return out
-end
-@testset "Custom Context" begin
+
+@testitem "Custom Context" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt, LoggingContext, add
+
     io1 = IOBuffer()
     io2 = IOBuffer()
     rt = new_test_rt(LoggingContext(io1))
@@ -400,13 +428,15 @@ end
 # end
 
 
-const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
+
 
 # NOTE: This test is testing internal aspects of the package, not the public API.
-@testset "Growing the trace pool freelist" begin
+@testitem "Growing the trace pool freelist" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     @derived function recursive_cause_pool_growth(rt, n::Int)::Int
         # Verify that things still work after at least one pool growth
-        if n <= NUM_TRACE_TEST_CALLS
+        if n <= SalsaSetup.NUM_TRACE_TEST_CALLS
             return recursive_cause_pool_growth(rt, n+1) + 1
         else
             return base_value(rt)
@@ -421,16 +451,18 @@ const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for goo
 
     # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
     # event of the trace pool + freelist.
-    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS
+    @test recursive_cause_pool_growth(rt, 1) == SalsaSetup.NUM_TRACE_TEST_CALLS
 
     # Now test that the dependencies were recorded correctly, and everything reruns
     Salsa.new_epoch!(rt)
     set_base_value!(rt, 1)
 
-    @test recursive_cause_pool_growth(rt, 1) == NUM_TRACE_TEST_CALLS + 1
+    @test recursive_cause_pool_growth(rt, 1) == SalsaSetup.NUM_TRACE_TEST_CALLS + 1
 end
 
-@testset "task parallel derived functions invalidation" begin
+@testitem "task parallel derived functions invalidation" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
     @declare_input i(_, ::Int)::Int
 
     # Test that derived functions spawned on other threads still record their dependencies
@@ -467,7 +499,7 @@ end
 #  Package Health / Performance Tests
 # ==============================================
 
-@testset "No unbound type parameters (performance hazard)" begin
+@testitem "No unbound type parameters (performance hazard)" begin
     # Make sure that there aren't any unbound params, which can be a performance problem.
     # https://discourse.julialang.org/t/unused-where-t-causes-a-function-to-become-very-slow/39727/4
     # NOTE: Was having StackOverflow problems when I set recursive=true, so I'm manually
