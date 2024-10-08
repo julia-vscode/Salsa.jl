@@ -3,5 +3,7 @@
 
 /Manifest.toml
 
+.vscode/settings.json
+
 # Vim
 *~
