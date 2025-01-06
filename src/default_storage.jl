@@ -245,6 +245,10 @@ function Salsa._memoized_lookup_internal(
                 # deps are recorded in-place. Note that we must swap them back at the end.
                 existing_value.dependencies, trace.ordered_deps =
                     trace.ordered_deps, existing_value.dependencies
+                # Because we are using the ordered_deps vector from the existing
+                # value, we need to empty it here, otherwise dependencies from a
+                # previous invocation of the derived function will hang around
+                empty!(trace.ordered_deps)
                 try
                     v = user_func(runtime, key.args...)
                 finally
