@@ -127,7 +127,7 @@ end
 
 function _build_graph(io, st::AbstractSalsaStorage,
         derived_key, v, deps::Vector,  # Vector of salsa keys
-        seen::_IdSet{Any}, modules_map::Dict{Module,Set}, edges::Dict{Pair, Int}) where {F,TT}
+        seen::_IdSet{Any}, modules_map::Dict{Module,Set}, edges::Dict{Pair, Int})
     in(derived_key, seen) && return
     push!(seen, derived_key)
     for d in deps
