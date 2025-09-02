@@ -427,8 +427,33 @@ end
 #     @test sum_all_ranges(rt) === sum(1:N) * I
 # end
 
+@testitem "Test previous_output" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
 
+    @declare_input n(s)::Int
 
+    @derived function sumrange(s)::Tuple{Int, Int}
+        prev_value = Salsa.previous_output(s)
+        cur_n = n(s)
+        reuse_prev = prev_value !== nothing && prev_value[2] < cur_n
+        result = reuse_prev ? prev_value[1] : 0
+        prev_n = reuse_prev ? prev_value[2] : 0
+        for x in (prev_n + 1):cur_n
+            result += x
+        end
+        return result, cur_n
+    end
+
+    rt = new_test_rt()
+    set_n!(rt, 1)
+    sumrange(rt) == 1
+
+    set_n!(rt, 3)
+    sumrange(rt) == 6
+
+    set_n!(rt, 1)
+    sumrange(rt) == 1
+end
 
 # NOTE: This test is testing internal aspects of the package, not the public API.
 @testitem "Growing the trace pool freelist" setup=[SalsaSetup] begin
