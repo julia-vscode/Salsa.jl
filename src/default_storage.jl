@@ -358,8 +358,31 @@ function Salsa._memoized_lookup_internal(
 )
     storage = Salsa.storage(runtime)
     cache = get_map_for_key(storage, key)
-    @lock storage.lock begin
-        return cache[key]
+    val = @lock storage.lock begin
+        get(cache, key, nothing)
+    end
+
+    if val === nothing        
+        f = Salsa.get_lazy_input_function(runtime, key)
+
+        if f === nothing
+            throw(KeyError("Input $key not found in Salsa storage, and no lazy input callback provided."))
+        else
+            new_unwrapped_val = f(Salsa.context(runtime), key.args...)
+
+            @lock storage.lock begin
+                # TODO DA Do we need to increase this here? Unclear...
+                # storage.current_revision += 1
+
+                new_val = InputValue(new_unwrapped_val, storage.current_revision)
+
+                cache[key] = new_val
+
+                return new_val
+            end
+        end
+    else
+        return val
     end
 end
 
