@@ -370,7 +370,6 @@ function Salsa._memoized_lookup_internal(
         while true
             val = get(cache, key, nothing)
             if val !== nothing
-                unlock(storage.lock)
                 return val
             end
 
@@ -386,8 +385,7 @@ function Salsa._memoized_lookup_internal(
             # Nobody is computing this key yet. Check for a lazy callback.
             f = Salsa.get_lazy_input_function(runtime, key)
             if f === nothing
-                unlock(storage.lock)
-                throw(KeyError("Input $key not found in Salsa storage, and no lazy input callback provided."))
+                throw(KeyError(key))
             end
 
             # Register a sentinel so other threads know we're computing this key.
@@ -396,35 +394,31 @@ function Salsa._memoized_lookup_internal(
             unlock(storage.lock)
 
             # Compute the lazy value outside the lock.
+            local new_val
             try
                 new_unwrapped_val = f(Salsa.context(runtime), key.args...)
-
-                lock(storage.lock)
-                # We intentionally do NOT bump current_revision here. A lazy input
-                # materializing for the first time is not a "change" — it is the initial
-                # value at the current revision. Bumping would force all derived functions
-                # to re-verify unnecessarily.
                 new_val = InputValue(new_unwrapped_val, storage.current_revision)
-                cache[key] = new_val
-                notify(sentinel)
-                delete!(storage.in_progress_lazy_inputs, key)
-                unlock(storage.lock)
-                return new_val
             catch
                 # Clean up the sentinel so waiting threads can retry or see the error.
                 lock(storage.lock)
                 notify(sentinel)
                 delete!(storage.in_progress_lazy_inputs, key)
-                unlock(storage.lock)
                 rethrow()
             end
+
+            # Re-acquire the lock to store the result and clean up.
+            lock(storage.lock)
+            # We intentionally do NOT bump current_revision here. A lazy input
+            # materializing for the first time is not a "change" — it is the initial
+            # value at the current revision. Bumping would force all derived functions
+            # to re-verify unnecessarily.
+            cache[key] = new_val
+            notify(sentinel)
+            delete!(storage.in_progress_lazy_inputs, key)
+            return new_val
         end
-    catch
-        # If we still hold the lock when an unexpected error occurs (e.g. KeyError throw
-        # above already unlocked, but the while-loop lock path might not have), we must
-        # not double-unlock. The structured try above handles each path explicitly, so
-        # this outer catch just rethrows.
-        rethrow()
+    finally
+        unlock(storage.lock)
     end
 end
 

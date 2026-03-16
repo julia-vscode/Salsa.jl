@@ -594,6 +594,11 @@ end
     using .SalsaSetup: new_test_rt
     using Base.Threads: Atomic, atomic_add!
 
+    if Threads.nthreads() < 2
+        @info "Skipping concurrency test: requires multiple threads"
+        @test_skip false
+    else
+
     call_count = Atomic{Int}(0)
 
     function slow_lazy_callback(ctx, id::Int)
@@ -620,6 +625,8 @@ end
     @test all(r -> r == 4201, results)
     # The lazy callback should have been called exactly once for key 42
     @test call_count[] == 1
+
+    end # if nthreads
 end
 
 @testitem "lazy input error handling" setup=[SalsaSetup] begin
