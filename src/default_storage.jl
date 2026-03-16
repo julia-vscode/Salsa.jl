@@ -80,8 +80,13 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
     # modify any inputs while derived functions are active, on the current Task or any Task.
     derived_functions_active::Atomic{Int}
 
+    # Tracks lazy input keys currently being computed. When a lazy input callback is
+    # in-progress, a Threads.Condition is stored here so that other threads requesting the
+    # same key can wait instead of running the callback a second time.
+    in_progress_lazy_inputs::Dict{InputKey, Threads.Condition}
+
     function DefaultStorage()
-        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), Atomic{Int}(0))
+        new(Base.ReentrantLock(), 0, InputMapType(), DerivedFunctionMapType(), Atomic{Int}(0), Dict{InputKey, Threads.Condition}())
     end
 end
 
@@ -358,31 +363,68 @@ function Salsa._memoized_lookup_internal(
 )
     storage = Salsa.storage(runtime)
     cache = get_map_for_key(storage, key)
-    val = @lock storage.lock begin
-        get(cache, key, nothing)
-    end
 
-    if val === nothing        
-        f = Salsa.get_lazy_input_function(runtime, key)
+    lock(storage.lock)
+    try
+        # Check cache — may loop back here after waiting on another thread's computation.
+        while true
+            val = get(cache, key, nothing)
+            if val !== nothing
+                unlock(storage.lock)
+                return val
+            end
 
-        if f === nothing
-            throw(KeyError("Input $key not found in Salsa storage, and no lazy input callback provided."))
-        else
-            new_unwrapped_val = f(Salsa.context(runtime), key.args...)
+            # Cache miss. Check if another thread is already computing this lazy input.
+            cond = get(storage.in_progress_lazy_inputs, key, nothing)
+            if cond !== nothing
+                # Another thread is computing this key. Wait for it to finish, then
+                # loop back to re-check the cache.
+                wait(cond)  # atomically releases lock, sleeps, re-acquires lock
+                continue
+            end
 
-            @lock storage.lock begin
-                # TODO DA Do we need to increase this here? Unclear...
-                # storage.current_revision += 1
+            # Nobody is computing this key yet. Check for a lazy callback.
+            f = Salsa.get_lazy_input_function(runtime, key)
+            if f === nothing
+                unlock(storage.lock)
+                throw(KeyError("Input $key not found in Salsa storage, and no lazy input callback provided."))
+            end
 
+            # Register a sentinel so other threads know we're computing this key.
+            sentinel = Threads.Condition(storage.lock)
+            storage.in_progress_lazy_inputs[key] = sentinel
+            unlock(storage.lock)
+
+            # Compute the lazy value outside the lock.
+            try
+                new_unwrapped_val = f(Salsa.context(runtime), key.args...)
+
+                lock(storage.lock)
+                # We intentionally do NOT bump current_revision here. A lazy input
+                # materializing for the first time is not a "change" — it is the initial
+                # value at the current revision. Bumping would force all derived functions
+                # to re-verify unnecessarily.
                 new_val = InputValue(new_unwrapped_val, storage.current_revision)
-
                 cache[key] = new_val
-
+                notify(sentinel)
+                delete!(storage.in_progress_lazy_inputs, key)
+                unlock(storage.lock)
                 return new_val
+            catch
+                # Clean up the sentinel so waiting threads can retry or see the error.
+                lock(storage.lock)
+                notify(sentinel)
+                delete!(storage.in_progress_lazy_inputs, key)
+                unlock(storage.lock)
+                rethrow()
             end
         end
-    else
-        return val
+    catch
+        # If we still hold the lock when an unexpected error occurs (e.g. KeyError throw
+        # above already unlocked, but the while-loop lock path might not have), we must
+        # not double-unlock. The structured try above handles each path explicitly, so
+        # this outer catch just rethrows.
+        rethrow()
     end
 end
 

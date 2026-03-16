@@ -508,3 +508,214 @@ end
     @test isempty(Test.detect_unbound_args(Salsa._DefaultSalsaStorage, recursive=false))
     @test isempty(Test.detect_unbound_args(Salsa.Debug, recursive=false))
 end
+
+# ==============================================
+#  Lazy Input Tests
+# ==============================================
+
+@testitem "basic lazy input" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Base.Threads: Atomic, atomic_add!
+
+    call_count = Atomic{Int}(0)
+
+    function my_lazy_callback(ctx, name::String)
+        atomic_add!(call_count, 1)
+        return name == "Alice" ? 3.5 : 2.0
+    end
+
+    @declare_input grade(rt, name::String)::Float64 my_lazy_callback
+
+    @derived function grade_letter(rt, name::String)::String
+        g = grade(rt, name)
+        return g >= 3.0 ? "A" : "B"
+    end
+
+    rt = new_test_rt()
+
+    # First access triggers the lazy callback
+    @test grade(rt, "Alice") == 3.5
+    @test call_count[] == 1
+
+    # Second access should be cached — callback not called again
+    @test grade(rt, "Alice") == 3.5
+    @test call_count[] == 1
+
+    # Different key triggers callback again
+    @test grade(rt, "Bob") == 2.0
+    @test call_count[] == 2
+
+    # Derived function works with lazy input
+    @test grade_letter(rt, "Alice") == "A"
+    @test grade_letter(rt, "Bob") == "B"
+    @test call_count[] == 2  # No extra calls — values were cached
+end
+
+@testitem "lazy input with derived function invalidation" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Base.Threads: Atomic, atomic_add!
+
+    lazy_call_count = Atomic{Int}(0)
+
+    function lookup_score(ctx, id::Int)
+        atomic_add!(lazy_call_count, 1)
+        return id * 10.0
+    end
+
+    @declare_input score(rt, id::Int)::Float64 lookup_score
+
+    derived_call_count = Ref(0)
+    @derived function doubled_score(rt, id::Int)::Float64
+        derived_call_count[] += 1
+        return score(rt, id) * 2
+    end
+
+    rt = new_test_rt()
+
+    # Lazy input feeds derived function
+    @test doubled_score(rt, 1) == 20.0
+    @test lazy_call_count[] == 1
+    @test derived_call_count[] == 1
+
+    # Cached on second access
+    @test doubled_score(rt, 1) == 20.0
+    @test lazy_call_count[] == 1
+    @test derived_call_count[] == 1
+
+    # set_input! overrides the lazy-computed value and invalidates derived
+    Salsa.new_epoch!(rt)
+    set_score!(rt, 1, 99.0)
+    @test doubled_score(rt, 1) == 198.0
+    @test lazy_call_count[] == 1  # Lazy callback was NOT called again
+    @test derived_call_count[] == 2  # Derived function DID re-run
+end
+
+@testitem "lazy input callback runs exactly once under concurrency" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Base.Threads: Atomic, atomic_add!
+
+    call_count = Atomic{Int}(0)
+
+    function slow_lazy_callback(ctx, id::Int)
+        atomic_add!(call_count, 1)
+        sleep(0.05)  # Simulate a slow side-effecting operation
+        return id * 100
+    end
+
+    @declare_input slow_input(rt, id::Int)::Int slow_lazy_callback
+
+    @derived function use_slow(rt, id::Int)::Int
+        return slow_input(rt, id) + 1
+    end
+
+    rt = new_test_rt()
+
+    # Access the same lazy input from multiple threads concurrently
+    results = Vector{Int}(undef, 4)
+    Threads.@threads for i in 1:4
+        results[i] = use_slow(rt, 42)
+    end
+
+    # All threads should get the same result
+    @test all(r -> r == 4201, results)
+    # The lazy callback should have been called exactly once for key 42
+    @test call_count[] == 1
+end
+
+@testitem "lazy input error handling" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Salsa: DerivedFunctionException
+    using Base.Threads: Atomic, atomic_add!
+
+    call_count = Atomic{Int}(0)
+    should_fail = Ref(true)
+
+    function flaky_callback(ctx, id::Int)
+        atomic_add!(call_count, 1)
+        if should_fail[]
+            error("transient failure")
+        end
+        return id * 10
+    end
+
+    @declare_input flaky(rt, id::Int)::Int flaky_callback
+
+    @derived function use_flaky(rt, id::Int)::Int
+        return flaky(rt, id) + 1
+    end
+
+    rt = new_test_rt()
+
+    # First attempt fails — error propagates
+    @test_throws DerivedFunctionException use_flaky(rt, 1)
+    @test call_count[] == 1
+
+    # The key should NOT be cached on error — retry should call callback again
+    should_fail[] = false
+    @test use_flaky(rt, 1) == 11
+    @test call_count[] == 2
+
+    # Now it's cached — no more calls
+    @test use_flaky(rt, 1) == 11
+    @test call_count[] == 2
+end
+
+@testitem "lazy input deletion and recomputation" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Base.Threads: Atomic, atomic_add!
+
+    call_count = Atomic{Int}(0)
+
+    function recomputable_callback(ctx, id::Int)
+        atomic_add!(call_count, 1)
+        return id * 5
+    end
+
+    @declare_input recomp(rt, id::Int)::Int recomputable_callback
+
+    @derived function use_recomp(rt, id::Int)::Int
+        return recomp(rt, id) + 1
+    end
+
+    rt = new_test_rt()
+
+    # First access — lazy callback runs
+    @test use_recomp(rt, 1) == 6
+    @test call_count[] == 1
+
+    # Delete the input and re-access — callback should run again
+    Salsa.new_epoch!(rt)
+    delete_recomp!(rt, 1)
+    @test use_recomp(rt, 1) == 6
+    @test call_count[] == 2
+end
+
+@testitem "lazy input and set_input! override" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Base.Threads: Atomic, atomic_add!
+
+    call_count = Atomic{Int}(0)
+
+    function override_callback(ctx, id::Int)
+        atomic_add!(call_count, 1)
+        return id * 3
+    end
+
+    @declare_input overrideable(rt, id::Int)::Int override_callback
+
+    rt = new_test_rt()
+
+    # set_input! before any lazy access — callback should never be called
+    set_overrideable!(rt, 1, 999)
+    @test overrideable(rt, 1) == 999
+    @test call_count[] == 0
+
+    # set_input! after lazy access — overrides the lazy value
+    @test overrideable(rt, 2) == 6  # lazy: 2*3 = 6
+    @test call_count[] == 1
+
+    Salsa.new_epoch!(rt)
+    set_overrideable!(rt, 2, 777)
+    @test overrideable(rt, 2) == 777
+    @test call_count[] == 1  # No extra lazy calls
+end
