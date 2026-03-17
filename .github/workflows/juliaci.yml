@@ -13,6 +13,7 @@ jobs:
     with:
       include-all-compatible-minor-versions: true
       include-rc-versions: true
+      testitem-timeout: 120
     permissions: write-all
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
