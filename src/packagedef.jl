@@ -74,7 +74,13 @@ function Base.show(io::IO, rt::_TopLevelRuntime{EmptyContext,DefaultStorage})
     print(io, "Salsa.Runtime($(rt.storage))")
 end
 
+# Initialize at top level so trace pools are available during precompilation workloads.
+_init_thread_local_pools_and_freelists()
+
 function __init__()
-    # Init the freelists at runtime based on the number of threads julia is configured with.
+    # Re-initialize at runtime with the correct thread count.
+    empty!(g_threadlocal_trace_pools)
+    empty!(g_threadlocal_trace_freelists)
+    empty!(g_threadlocal_pool_locks)
     _init_thread_local_pools_and_freelists()
 end
