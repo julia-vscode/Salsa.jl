@@ -53,6 +53,40 @@ Running x_plus_one.
 11
 ```
 
+### Lazy Inputs
+
+By default, accessing an input that hasn't been set throws an error. With **lazy inputs**, you can provide a callback function that computes the value on-demand the first time it is accessed. This is useful for inputs backed by external data sources (files, databases, etc.) where you want values to be loaded only when needed.
+
+```julia
+julia> function load_student_grade(ctx, name::String)
+           println("Loading grade for $name...")
+           return name == "Alice" ? 3.5 : 2.0
+       end
+load_student_grade (generic function with 1 method)
+
+julia> @declare_input student_grade(rt, name::String)::Float64 load_student_grade
+(student_grade, set_student_grade!, delete_student_grade!)
+
+julia> @derived function pass_fail(rt, name::String)
+           student_grade(rt, name) >= 3.0 ? "Pass" : "Fail"
+       end
+pass_fail (generic function with 1 method)
+```
+```julia
+julia> rt = Salsa.Runtime();
+
+julia> pass_fail(rt, "Alice")
+Loading grade for Alice...
+"Pass"
+
+julia> pass_fail(rt, "Alice")
+"Pass"
+```
+
+The callback signature is `callback(context, args...)` where `context` is the Runtime's context object and `args...` match the input's key arguments. The callback is guaranteed to be called **at most once** per key, even under concurrent access from multiple threads — other threads requesting the same key will wait for the first computation to complete.
+
+You can override a lazy-computed value with `set_input!`, and you can delete it with the generated `delete_*!` function to force recomputation on next access.
+
 ### Flags
 
 For maximum performance in deployed software, you can disable all runtime assertions and debug code by setting this environment variable before building Salsa: `SALSA_STATIC_DEBUG=false`.

@@ -31,7 +31,7 @@ julia> student_grade(rt, "Nathan")
 ERROR: KeyError: key DependencyKey(key=InputKey{typeof(student_grade),Tuple{String}}(), args=("Nathan",)) not found
 ```
 """
-macro declare_input(e::Expr)
+macro declare_input(e::Expr, opt_args...)
     # We require the inputs to have a type specified so that Salsa can store them in a
     # typed dictionary per-input.
     @assert e.head === :(::) "Missing type annotation. Expected: @declare_input i(...)::Type"
@@ -116,6 +116,14 @@ macro declare_input(e::Expr)
     push!(callexpr.args, :($implicit_value_arg::$value_t))
     setter = Expr(:function, callexpr, setter_body)
 
+    lazy_input_function = if length(opt_args) == 0
+        :nothing
+    elseif length(opt_args) == 1
+        opt_args[1]
+    else
+        error("Too many arguments.")
+    end
+
     esc(quote
         Core.@__doc__ $getter
         $setter
@@ -127,6 +135,13 @@ macro declare_input(e::Expr)
             ::$input_key_t,
         )
             return $getter
+        end
+
+        @inline function $Salsa.get_lazy_input_function(
+            $(fullargs[1]),
+            ::$input_key_t,
+        )
+            return $lazy_input_function
         end
 
         # Return all the generated functions as a hint to REPL users what we're generating.
@@ -147,3 +162,5 @@ end
 function _safe_deleter_body(::Salsa._TracingRuntime, key)
     error("Attempted impure operation in a derived function!: delete_input!(rt, $key)")
 end
+
+function get_lazy_input_function end

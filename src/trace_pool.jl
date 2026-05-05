@@ -45,16 +45,20 @@ const N_INIT_TRACES = 1024
 
 # This function is called in Salsa.__init__() because we don't know the
 # number of threads until runtime. (__init__() is defined at the end of this file.)
+# Use maxthreadid() when available (Julia 1.11+) to account for interactive/GC threads
+# whose IDs exceed nthreads().
+_num_thread_slots() = isdefined(Base.Threads, :maxthreadid) ? Threads.maxthreadid() : Threads.nthreads()
 function _init_thread_local_pools_and_freelists()
+    n = _num_thread_slots()
     append!(
         g_threadlocal_trace_pools,
-        TraceOfDependencyKeys[TraceOfDependencyKeys() for _ = 1:N_INIT_TRACES] for _ = 1:Threads.nthreads()
+        TraceOfDependencyKeys[TraceOfDependencyKeys() for _ = 1:N_INIT_TRACES] for _ = 1:n
     )
     append!(
         g_threadlocal_trace_freelists,
-        Int[i for i = 1:N_INIT_TRACES] for _ = 1:Threads.nthreads()
+        Int[i for i = 1:N_INIT_TRACES] for _ = 1:n
     )
-    for _ = 1:Threads.nthreads()
+    for _ = 1:n
         push!(g_threadlocal_pool_locks, Base.ReentrantLock())
     end
     return nothing
