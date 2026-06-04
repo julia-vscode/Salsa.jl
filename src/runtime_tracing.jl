@@ -31,7 +31,7 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
         key::DependencyKey,
     )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
         new{CT,ST}(
-            reinterpret(Ptr{ST}, pointer_from_objref(old_rt)),
+            reinterpret(Ptr{_TopLevelRuntime{CT,ST}}, pointer_from_objref(old_rt)),
             # Start a new, empty trace (with the provided call stack if in debug mode)
             if Salsa.Debug.debug_enabled()
                 get_trace_with_call_stack(SalsaStackFrame(key, nothing))
@@ -74,6 +74,8 @@ end
 context(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).context
 
 storage(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).storage
+
+_tracing(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).tracing
 
 trace(rt::_TracingRuntime) = get_trace(rt.immediate_dependencies_id)
 

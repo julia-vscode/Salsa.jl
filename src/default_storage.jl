@@ -255,7 +255,7 @@ function Salsa._memoized_lookup_internal(
                 # previous invocation of the derived function will hang around
                 empty!(trace.ordered_deps)
                 try
-                    v = user_func(runtime, key.args...)
+                    v = Salsa._run_user_func(runtime, user_func, key)
                 finally
                     # Swap back the dependency vectors so the vector isn't modified by
                     # future traces.
@@ -263,7 +263,7 @@ function Salsa._memoized_lookup_internal(
                         trace.ordered_deps, existing_value.dependencies
                 end
             else
-                v = user_func(runtime, key.args...)
+                v = Salsa._run_user_func(runtime, user_func, key)
             end
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable

@@ -124,6 +124,12 @@ macro derived(f)
                 return $userfname
             end
 
+            # The names of the derived function's arguments (excluding the leading runtime),
+            # used to attach them as keyword attributes on tracing spans.
+            @inline function $Salsa._derived_arg_names(::$DerivedKey{typeof($fname)})
+                return ($(map(QuoteNode, argnames[2:end])...),)
+            end
+
             $fname
         end,
     )
@@ -134,3 +140,7 @@ end
 # This function needs to be forward declared so that the `@derived` macro can add a method
 # to it from the user's module where it was called.
 function get_user_function end
+
+# Forward declared so that the `@derived` macro can add a method to it that reports the
+# argument names of each derived function (used for tracing span attributes).
+function _derived_arg_names end

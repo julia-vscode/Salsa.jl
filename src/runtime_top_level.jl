@@ -2,15 +2,19 @@
 # likely to tweak, whereas the Storage type is more of an internal detail.
 
 # Users call this `Runtime()` function, and we generate them a `_TopLevelRuntime()`.
-function Runtime{CT,ST}(ctx::CT = CT(), st::ST = ST()) where {CT,ST<:AbstractSalsaStorage}
-    return _TopLevelRuntime{CT,ST}(ctx, st)
+#
+# Passing `tracing=true` wraps every derived function (re)computation in a
+# `TraceLogging.trace` span. When it is left as `false` (the default), the tracing code path
+# is skipped via a simple `if` check before running the user function.
+function Runtime{CT,ST}(ctx::CT = CT(), st::ST = ST(); tracing::Bool = false) where {CT,ST<:AbstractSalsaStorage}
+    return _TopLevelRuntime{CT,ST}(ctx, st, tracing)
 end
 
 # By default, Runtime() use the DefaultStorage provided by Salsa in default_storage.jl, and
 # does not specify any custom context.
-Runtime{CT}(ctx::CT = CT()) where {CT} = Runtime{CT,DefaultStorage}(ctx, DefaultStorage())
-Runtime(st) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st)
-Runtime() = Runtime(DefaultStorage())  # Equivalent to DefaultRuntime()
+Runtime{CT}(ctx::CT = CT(); kwargs...) where {CT} = Runtime{CT,DefaultStorage}(ctx, DefaultStorage(); kwargs...)
+Runtime(st; kwargs...) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st; kwargs...)
+Runtime(; kwargs...) = Runtime(DefaultStorage(); kwargs...)  # Equivalent to DefaultRuntime()
 
 # This is the top-level Runtime object which users will instantiate for using Salsa. We mark
 # the _TopLevelRuntime as mutable, so that we can take its pointer_from_objref(). It will
@@ -24,6 +28,10 @@ mutable struct _TopLevelRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
 
     # The storage is where all the tracking of state and invalidation happens.
     storage::ST
+
+    # Whether derived function (re)computations should be wrapped in `TraceLogging.trace`
+    # spans. Checked with a simple `if` before running each user function.
+    tracing::Bool
 end
 
 ########## Implementation of Runtime API
@@ -31,6 +39,8 @@ end
 context(rt::_TopLevelRuntime) = rt.context
 
 storage(rt::_TopLevelRuntime) = rt.storage
+
+_tracing(rt::_TopLevelRuntime) = rt.tracing
 
 # Top-level runtimes do not support tracing. Explicit overloads for safety here.
 trace(::_TopLevelRuntime) = error("Attempted to call `trace` on a top-level runtime.")
@@ -46,4 +56,3 @@ end
 function previous_output(::_TopLevelRuntime)
     error("`previous_output(rt)` may only be called from inside a derived function.")
 end
-

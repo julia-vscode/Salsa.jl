@@ -7,6 +7,8 @@ export @derived, @declare_input, Runtime, DerivedFunctionException
 import MacroTools
 # For registering DerivedFunctionException as a wrapped exception.
 import ExceptionUnwrapping
+# Per-derived-function tracing spans are emitted via TraceLogging when tracing is enabled.
+import TraceLogging
 
 include("packagedef.jl")
 

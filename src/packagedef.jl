@@ -29,6 +29,9 @@ include("runtime_generic.jl")
 include("runtime_top_level.jl")
 include("runtime_tracing.jl")
 
+# Per-derived-function tracing support (TraceLogging spans, compiled away when disabled).
+include("timing.jl")
+
 # --- Macro utils -----
 
 # Return an array of the Symbol names of every argument in a function definition. To ensure
@@ -60,7 +63,7 @@ const _TopLevelRuntimeWithStorage{ST,CT} = _TopLevelRuntime{CT,ST}
 const _TracingRuntimeWithStorage{ST,CT} = _TracingRuntime{CT,ST}
 
 # Default context, manual storage
-RuntimeWithStorage{ST}(st = ST()) where {ST} = Runtime{EmptyContext,ST}(EmptyContext(), st)
+RuntimeWithStorage{ST}(st = ST(); kwargs...) where {ST} = Runtime{EmptyContext,ST}(EmptyContext(), st; kwargs...)
 
 include("inspect.jl")
 
