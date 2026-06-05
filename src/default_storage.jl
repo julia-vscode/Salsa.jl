@@ -258,7 +258,7 @@ function Salsa._memoized_lookup_internal(
                 # previous invocation of the derived function will hang around
                 empty!(trace.ordered_deps)
                 try
-                    v = TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{_derived_arg_names(key)}(key.args) Salsa._run_user_func(runtime, user_func, key)
+                    v = Salsa.TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{_derived_arg_names(key)}(key.args) Salsa._run_user_func(runtime, user_func, key)
                 finally
                     # Swap back the dependency vectors so the vector isn't modified by
                     # future traces.
@@ -266,7 +266,7 @@ function Salsa._memoized_lookup_internal(
                         trace.ordered_deps, existing_value.dependencies
                 end
             else
-                v = TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{_derived_arg_names(key)}(key.args) Salsa._run_user_func(runtime, user_func, key)
+                v = Salsa.TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{_derived_arg_names(key)}(key.args) Salsa._run_user_func(runtime, user_func, key)
             end
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable
