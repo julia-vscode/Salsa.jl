@@ -5,9 +5,9 @@ version = "2.4.1-DEV"
 
 [deps]
 ExceptionUnwrapping = "460bff9d-24e4-43bc-9d9f-a8973cb893f4"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
-TraceLogging = "59fbf51e-df65-4e44-8e78-ffc45bd67159"
 
 [extras]
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
@@ -17,7 +17,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 julia = "1.11"
 ExceptionUnwrapping = "0.1"
 MacroTools = "0.5"
-TraceLogging = "0.1"
 
 [targets]
 test = ["Test", "TestItemRunner"]

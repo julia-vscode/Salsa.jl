@@ -1,9 +1,9 @@
 # Per-derived-function tracing support.
 #
-# Every (re)computation of a derived function is wrapped in a `TraceLogging.@trace_span`. The
+# Every (re)computation of a derived function is wrapped in a `TraceLogging.@trace`. The
 # span is named after the derived function and carries the function's arguments as
 # attributes. Whether anything is actually recorded is decided dynamically by `TraceLogging`:
-# when no trace receiver is active (the default), `@trace_span` expands to just the user-func
+# when no trace receiver is active (the default), `@trace` expands to just the user-func
 # call and neither the span name nor the attributes are computed, so the only overhead is a
 # scoped-value read and a branch.
 #
@@ -18,11 +18,11 @@ function _derived_func_name(::DerivedKey{F}) where {F}
 end
 
 # Entry point used by storage backends in place of a direct `user_func(runtime, key.args...)`
-# call. Wraps the computation in a `TraceLogging.@trace_span` named after the derived function,
+# call. Wraps the computation in a `TraceLogging.@trace` named after the derived function,
 # attaching its arguments as attributes. The span is only materialized when a trace receiver is
 # active; otherwise this is just the user-func call.
 @inline function _run_user_func(runtime, user_func, key)
-    return TraceLogging.@trace_span(
+    return TraceLogging.@trace(
         string(_derived_func_name(key)),
         NamedTuple{_derived_arg_names(key)}(key.args),
         user_func(runtime, key.args...)
