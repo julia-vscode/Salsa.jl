@@ -2,12 +2,8 @@
 # likely to tweak, whereas the Storage type is more of an internal detail.
 
 # Users call this `Runtime()` function, and we generate them a `_TopLevelRuntime()`.
-#
-# Passing `tracing=true` wraps every derived function (re)computation in a
-# `TraceLogging.trace` span. When it is left as `false` (the default), the tracing code path
-# is skipped via a simple `if` check before running the user function.
-function Runtime{CT,ST}(ctx::CT = CT(), st::ST = ST(); tracing::Bool = false) where {CT,ST<:AbstractSalsaStorage}
-    return _TopLevelRuntime{CT,ST}(ctx, st, tracing)
+function Runtime{CT,ST}(ctx::CT = CT(), st::ST = ST()) where {CT,ST<:AbstractSalsaStorage}
+    return _TopLevelRuntime{CT,ST}(ctx, st)
 end
 
 # By default, Runtime() use the DefaultStorage provided by Salsa in default_storage.jl, and
@@ -28,10 +24,6 @@ mutable struct _TopLevelRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
 
     # The storage is where all the tracking of state and invalidation happens.
     storage::ST
-
-    # Whether derived function (re)computations should be wrapped in `TraceLogging.trace`
-    # spans. Checked with a simple `if` before running each user function.
-    tracing::Bool
 end
 
 ########## Implementation of Runtime API
@@ -39,8 +31,6 @@ end
 context(rt::_TopLevelRuntime) = rt.context
 
 storage(rt::_TopLevelRuntime) = rt.storage
-
-_tracing(rt::_TopLevelRuntime) = rt.tracing
 
 # Top-level runtimes do not support tracing. Explicit overloads for safety here.
 trace(::_TopLevelRuntime) = error("Attempted to call `trace` on a top-level runtime.")

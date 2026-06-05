@@ -1,10 +1,11 @@
 # Per-derived-function tracing support.
 #
-# When a Salsa `Runtime` is created with `tracing=true`, every (re)computation of a derived
-# function is wrapped in a `TraceLogging.trace` span. The span is named after the derived
-# function and carries the function's arguments as keyword attributes. When `tracing=false`
-# (the default), `_run_user_func` skips the tracing machinery with a simple `if` check and
-# calls the user function directly.
+# Every (re)computation of a derived function is wrapped in a `TraceLogging.@trace_span`. The
+# span is named after the derived function and carries the function's arguments as
+# attributes. Whether anything is actually recorded is decided dynamically by `TraceLogging`:
+# when no trace receiver is active (the default), `@trace_span` expands to just the user-func
+# call and neither the span name nor the attributes are computed, so the only overhead is a
+# scoped-value read and a branch.
 #
 # Span correlation (parent/root operation ids) and timing are handled entirely by
 # `TraceLogging`: each span generates a fresh operation id, records the enclosing span as its
@@ -17,17 +18,13 @@ function _derived_func_name(::DerivedKey{F}) where {F}
 end
 
 # Entry point used by storage backends in place of a direct `user_func(runtime, key.args...)`
-# call. When tracing is enabled on the runtime, wrap the computation in a `TraceLogging.trace`
-# span named after the derived function, attaching its arguments as keyword attributes.
-# Otherwise, call the user function directly.
+# call. Wraps the computation in a `TraceLogging.@trace_span` named after the derived function,
+# attaching its arguments as attributes. The span is only materialized when a trace receiver is
+# active; otherwise this is just the user-func call.
 @inline function _run_user_func(runtime, user_func, key)
-    if _tracing(runtime)
-        name = string(_derived_func_name(key))
-        attributes = NamedTuple{_derived_arg_names(key)}(key.args)
-        return TraceLogging.trace(name; attributes...) do
-            user_func(runtime, key.args...)
-        end
-    else
-        return user_func(runtime, key.args...)
-    end
+    return TraceLogging.@trace_span(
+        string(_derived_func_name(key)),
+        NamedTuple{_derived_arg_names(key)}(key.args),
+        user_func(runtime, key.args...)
+    )
 end
