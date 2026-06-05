@@ -1,11 +1,10 @@
 module TraceLogging
 
-import UUIDs: uuid4
 using Logging: Logging
 
 export trace, @trace, TraceSpan, AbstractTraceReceiver,
     receive_span, receive_log, is_tracing_active, with_tracing, TraceContextLogger,
-    current_span_id, current_trace_id
+    current_span_id, current_trace_id, format_span_id, format_trace_id
 
 # The receiver for the dynamically-enclosing trace scope. Tracing is *off* whenever this is
 # `nothing` (the default), which is the case unless some caller has established a scope with
@@ -14,23 +13,66 @@ export trace, @trace, TraceSpan, AbstractTraceReceiver,
 # place when nothing is listening is a single scoped-value read plus a branch.
 const TRACE_RECEIVER = Base.ScopedValues.ScopedValue{Union{Nothing,Any}}(nothing)
 
-const CURRENT_SPAN_ID = Base.ScopedValues.ScopedValue{Union{Nothing,String}}(nothing)
-const TRACE_ID = Base.ScopedValues.ScopedValue{Union{Nothing,String}}(nothing)
+# Trace/span ids are stored as raw integers matching the OpenTelemetry wire widths: span ids
+# are 64-bit and trace ids are 128-bit. We keep them as integers (rather than formatted hex
+# strings) to avoid a string allocation per span on the hot path; hex formatting is deferred
+# to the serialization boundary via [`format_span_id`](@ref) / [`format_trace_id`](@ref).
+const CURRENT_SPAN_ID = Base.ScopedValues.ScopedValue{Union{Nothing,UInt64}}(nothing)
+const TRACE_ID = Base.ScopedValues.ScopedValue{Union{Nothing,UInt128}}(nothing)
+
+# Generate a fresh, non-zero OpenTelemetry-compatible span id (64 bits). `rand` uses the
+# task-local RNG, so this is safe to call concurrently from multiple tasks/threads. The
+# OpenTelemetry spec forbids an all-zero id; the guard's retry probability is ~2^-64.
+@inline function _new_span_id()
+    id = rand(UInt64)
+    while id == 0
+        id = rand(UInt64)
+    end
+    return id
+end
+
+# Generate a fresh, non-zero OpenTelemetry-compatible trace id (128 bits). See
+# [`_new_span_id`](@ref) for the task-local RNG and non-zero guarantees.
+@inline function _new_trace_id()
+    id = rand(UInt128)
+    while id == 0
+        id = rand(UInt128)
+    end
+    return id
+end
 
 """
-    current_span_id() -> Union{Nothing,String}
+    format_span_id(id::UInt64) -> String
 
-Return the operation id of the currently-executing trace span, or `nothing` if not currently
-inside a [`trace`](@ref) scope.
+Format a span id as the OpenTelemetry-canonical 16-character, zero-padded, lowercase hex
+string (no dashes).
+"""
+format_span_id(id::UInt64) = string(id, base = 16, pad = 16)
+
+"""
+    format_trace_id(id::UInt128) -> String
+
+Format a trace id as the OpenTelemetry-canonical 32-character, zero-padded, lowercase hex
+string (no dashes).
+"""
+format_trace_id(id::UInt128) = string(id, base = 16, pad = 32)
+
+"""
+    current_span_id() -> Union{Nothing,UInt64}
+
+Return the span id of the currently-executing trace span, or `nothing` if not currently
+inside a [`trace`](@ref) scope. The id is a raw 64-bit integer; use [`format_span_id`](@ref)
+to render it as OpenTelemetry-canonical hex.
 """
 current_span_id() = CURRENT_SPAN_ID[]
 
 """
-    current_trace_id() -> Union{Nothing,String}
+    current_trace_id() -> Union{Nothing,UInt128}
 
 Return the root trace id of the current trace tree, or `nothing` if not currently inside a
 [`trace`](@ref) scope. Stable across the whole tree; intended as the shared OpenTelemetry
-trace id.
+trace id. The id is a raw 128-bit integer; use [`format_trace_id`](@ref) to render it as
+OpenTelemetry-canonical hex.
 """
 current_trace_id() = TRACE_ID[]
 
@@ -66,7 +108,8 @@ receivers that only care about spans need not implement it.
 The `log` named tuple has the fields `level`, `message`, `trace_id`, `span_id`, `time_ns`,
 `_module`, `group`, `id`, `file`, `line` and `kwargs`. `time_ns` is the raw monotonic
 `time_ns()` value captured when the record was handled; `trace_id` is the enclosing trace's
-root id and `span_id` the enclosing span id.
+root id (a `UInt128`, or `nothing`) and `span_id` the enclosing span id (a `UInt64`, or
+`nothing`).
 """
 receive_log(::AbstractTraceReceiver, ::NamedTuple) = nothing
 
@@ -93,23 +136,37 @@ with_tracing(f, receiver::AbstractTraceReceiver) =
 # when the span started; converting it to a wall-clock time is the responsibility of the
 # consumer (e.g. the language server instance), which owns a `(time(), time_ns())` reference
 # pair. Keeping the raw nanosecond value here avoids any precision loss in this layer.
-struct TraceSpan{A<:NamedTuple}
+#
+# `span_id`/`parent_span_id`/`trace_id` are raw integers matching the OpenTelemetry wire
+# widths (64-bit span ids, 128-bit trace ids); use [`format_span_id`](@ref) /
+# [`format_trace_id`](@ref) to render them as canonical hex. `attributes` is `nothing` when
+# the span carries no attributes (the common case, avoiding a `Dict` allocation) and a
+# `Dict{Symbol,Any}` otherwise. The struct is deliberately non-parametric so that every span
+# has the same concrete type, keeping `Vector{TraceSpan}` and `receive_span` free of
+# per-span dynamic dispatch.
+struct TraceSpan
     name::String
-    operation_id::String
-    parent_operation_id::Union{Nothing,String}
-    root_operation_id::String
+    span_id::UInt64
+    parent_span_id::Union{Nothing,UInt64}
+    trace_id::UInt128
     start_time_ns::UInt64
     duration_ns::UInt64
-    attributes::A
+    attributes::Union{Nothing,Dict{Symbol,Any}}
 end
+
+# Normalize span attributes to the stored representation: `nothing` for the empty case (no
+# allocation), otherwise a `Dict{Symbol,Any}`. The `NamedTuple` input keeps the ergonomic
+# `(; x=1)` call syntax at the trace sites while the stored type stays uniform.
+_to_attrs(::Nothing) = nothing
+_to_attrs(nt::NamedTuple) = isempty(nt) ? nothing : Dict{Symbol,Any}(pairs(nt))
 
 # Slow path for `trace`: a receiver is known to be active. Kept out-of-line so the common
 # (no-receiver) path through `trace` stays tiny and allocation-free.
 @noinline function _trace_active(f, receiver, name, attributes)
-    span_id = string(uuid4())
+    span_id = _new_span_id()
     root_id = TRACE_ID[]
     if root_id === nothing
-        root_id = string(uuid4())
+        root_id = _new_trace_id()
     end
     parent_id = CURRENT_SPAN_ID[]
 
@@ -121,7 +178,7 @@ end
         return ret, t0, duration
     end
 
-    receive_span(receiver, TraceSpan(name, span_id, parent_id, root_id, start_time_ns, duration, attributes))
+    receive_span(receiver, TraceSpan(name, span_id, parent_id, root_id, start_time_ns, duration, _to_attrs(attributes)))
 
     return v
 end
@@ -206,12 +263,12 @@ function _trace_span_expr(name, attributes, body)
         if receiver === nothing
             $(esc(body))
         else
-            local span_id = string($(uuid4)())
+            local span_id = $(_new_span_id)()
             local root_id = $(TRACE_ID)[]
-            root_id === nothing && (root_id = string($(uuid4)()))
+            root_id === nothing && (root_id = $(_new_trace_id)())
             local parent_id = $(CURRENT_SPAN_ID)[]
             local span_name = $(esc(name))
-            local span_attrs = $(esc(attributes))
+            local span_attrs = $(_to_attrs)($(esc(attributes)))
             local t0 = time_ns()
             local result = Base.ScopedValues.@with $(TRACE_ID) => root_id $(CURRENT_SPAN_ID) => span_id $(esc(body))
             local duration = time_ns() - t0
@@ -282,9 +339,9 @@ function _trace_call_expr(ex)
             $raw_callexpr
         else
             $(assignments...)
-            local span_id = string($(uuid4)())
+            local span_id = $(_new_span_id)()
             local root_id = $(TRACE_ID)[]
-            root_id === nothing && (root_id = string($(uuid4)()))
+            root_id === nothing && (root_id = $(_new_trace_id)())
             local parent_id = $(CURRENT_SPAN_ID)[]
             local t0 = time_ns()
             local result = Base.ScopedValues.@with $(TRACE_ID) => root_id $(CURRENT_SPAN_ID) => span_id $callexpr
@@ -296,7 +353,7 @@ function _trace_call_expr(ex)
                 root_id,
                 t0,
                 duration,
-                $attrs,
+                $(_to_attrs)($attrs),
             ))
             result
         end

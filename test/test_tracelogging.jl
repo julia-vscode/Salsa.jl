@@ -59,15 +59,24 @@ end
 
     @test inner.name == "inner"
     @test outer.name == "outer"
-    @test outer.attributes == (; a = 1)
+    @test outer.attributes == Dict(:a => 1)
 
     # Root id is shared across the tree; inner's parent is outer; outer (the root) has no
-    # parent. The root span's root_operation_id is a distinct fresh id (the OpenTelemetry
-    # trace id), separate from its own operation_id (span id).
-    @test inner.root_operation_id == outer.root_operation_id
-    @test outer.parent_operation_id === nothing
-    @test inner.parent_operation_id == outer.operation_id
-    @test outer.root_operation_id != outer.operation_id
+    # parent. The root span's `trace_id` is a distinct fresh id (the OpenTelemetry trace id),
+    # separate from its own `span_id`.
+    @test inner.trace_id == outer.trace_id
+    @test outer.parent_span_id === nothing
+    @test inner.parent_span_id == outer.span_id
+    @test outer.trace_id != outer.span_id
+
+    # Ids are stored as OpenTelemetry-width integers and are non-zero.
+    @test outer.span_id isa UInt64
+    @test outer.trace_id isa UInt128
+    @test outer.span_id != 0
+    @test outer.trace_id != 0
+
+    # `inner` has no attributes, which is stored as `nothing` (no Dict allocation).
+    @test inner.attributes === nothing
 end
 
 @testitem "TraceLogging function form with lazy attributes thunk" setup=[TraceLoggingSetup] begin
@@ -78,7 +87,7 @@ end
         TraceLogging.trace(() -> 1, "op", () -> (; x = 99))
     end
     @test length(recv.spans) == 1
-    @test recv.spans[1].attributes == (; x = 99)
+    @test recv.spans[1].attributes == Dict(:x => 99)
 
     # Thunk must NOT be called when tracing is off.
     called = Ref(false)
@@ -99,7 +108,7 @@ end
     @test length(recv.spans) == 1
     sp = recv.spans[1]
     @test sp.name == "h"
-    @test sp.attributes == (; x = "2", y = "5")
+    @test sp.attributes == Dict(:x => "2", :y => "5")
 end
 
 @testitem "TraceLogging TraceContextLogger forwards and enriches" setup=[TraceLoggingSetup] begin
@@ -130,4 +139,32 @@ end
     @test lg.message == "in scope"
     @test lg.trace_id !== nothing
     @test lg.span_id !== nothing
+    @test lg.trace_id isa UInt128
+    @test lg.span_id isa UInt64
 end
+
+@testitem "TraceLogging id formatters produce OTel-canonical hex" setup=[TraceLoggingSetup] begin
+    using .TraceLoggingSetup: TraceLogging, RecordingReceiver
+
+    # Span ids format to 16 lowercase hex chars; trace ids to 32. Zero-padded, no dashes.
+    @test TraceLogging.format_span_id(UInt64(0x1)) == "0000000000000001"
+    @test TraceLogging.format_span_id(typemax(UInt64)) == "ffffffffffffffff"
+    @test TraceLogging.format_trace_id(UInt128(0x1)) == "00000000000000000000000000000001"
+    @test TraceLogging.format_trace_id(typemax(UInt128)) == "ffffffffffffffffffffffffffffffff"
+
+    # Formatted ids captured from a live trace scope have the right shape.
+    recv = RecordingReceiver()
+    TraceLogging.with_tracing(recv) do
+        TraceLogging.@trace "op" NamedTuple() begin
+            sid = TraceLogging.format_span_id(TraceLogging.current_span_id())
+            tid = TraceLogging.format_trace_id(TraceLogging.current_trace_id())
+            @test length(sid) == 16
+            @test length(tid) == 32
+            @test occursin(r"^[0-9a-f]{16}$", sid)
+            @test occursin(r"^[0-9a-f]{32}$", tid)
+            @test !occursin('-', sid)
+            @test !occursin('-', tid)
+        end
+    end
+end
+
