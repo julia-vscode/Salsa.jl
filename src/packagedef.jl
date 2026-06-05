@@ -68,7 +68,7 @@ const _TopLevelRuntimeWithStorage{ST,CT} = _TopLevelRuntime{CT,ST}
 const _TracingRuntimeWithStorage{ST,CT} = _TracingRuntime{CT,ST}
 
 # Default context, manual storage
-RuntimeWithStorage{ST}(st = ST(); kwargs...) where {ST} = Runtime{EmptyContext,ST}(EmptyContext(), st; kwargs...)
+RuntimeWithStorage{ST}(st = ST()) where {ST} = Runtime{EmptyContext,ST}(EmptyContext(), st)
 
 include("inspect.jl")
 

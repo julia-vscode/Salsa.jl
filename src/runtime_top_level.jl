@@ -8,9 +8,9 @@ end
 
 # By default, Runtime() use the DefaultStorage provided by Salsa in default_storage.jl, and
 # does not specify any custom context.
-Runtime{CT}(ctx::CT = CT(); kwargs...) where {CT} = Runtime{CT,DefaultStorage}(ctx, DefaultStorage(); kwargs...)
-Runtime(st; kwargs...) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st; kwargs...)
-Runtime(; kwargs...) = Runtime(DefaultStorage(); kwargs...)  # Equivalent to DefaultRuntime()
+Runtime{CT}(ctx::CT = CT()) where {CT} = Runtime{CT,DefaultStorage}(ctx, DefaultStorage())
+Runtime(st) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st)
+Runtime() = Runtime(DefaultStorage())  # Equivalent to DefaultRuntime()
 
 # This is the top-level Runtime object which users will instantiate for using Salsa. We mark
 # the _TopLevelRuntime as mutable, so that we can take its pointer_from_objref(). It will
