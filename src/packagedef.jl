@@ -34,9 +34,6 @@ include("runtime_generic.jl")
 include("runtime_top_level.jl")
 include("runtime_tracing.jl")
 
-# Per-derived-function tracing support (TraceLogging spans, compiled away when disabled).
-include("timing.jl")
-
 # --- Macro utils -----
 
 # Return an array of the Symbol names of every argument in a function definition. To ensure
