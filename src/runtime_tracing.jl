@@ -75,8 +75,6 @@ context(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).context
 
 storage(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).storage
 
-_tracing(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).tracing
-
 trace(rt::_TracingRuntime) = get_trace(rt.immediate_dependencies_id)
 
 collect_call_stack(rt::_TracingRuntime) = _collect_call_stack_frames(trace(rt).call_stack)

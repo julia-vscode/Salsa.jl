@@ -46,3 +46,4 @@ end
 function previous_output(::_TopLevelRuntime)
     error("`previous_output(rt)` may only be called from inside a derived function.")
 end
+
