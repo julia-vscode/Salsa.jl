@@ -147,6 +147,9 @@ function Salsa._previous_output_internal(
     return previous_output
 end
 
+function _derived_func_name(::DerivedKey{F}) where {F}
+    return isdefined(F, :instance) ? nameof(F.instance) : nameof(F)
+end
 
 function Salsa._memoized_lookup_internal(
     runtime::Salsa._TracingRuntimeWithStorage{DefaultStorage},
@@ -255,7 +258,7 @@ function Salsa._memoized_lookup_internal(
                 # previous invocation of the derived function will hang around
                 empty!(trace.ordered_deps)
                 try
-                    v = user_func(runtime, key.args...)
+                    v = Salsa.TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{Salsa._derived_arg_names(key)}(key.args) user_func(runtime, key.args...)
                 finally
                     # Swap back the dependency vectors so the vector isn't modified by
                     # future traces.
@@ -263,7 +266,7 @@ function Salsa._memoized_lookup_internal(
                         trace.ordered_deps, existing_value.dependencies
                 end
             else
-                v = user_func(runtime, key.args...)
+                v = Salsa.TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{Salsa._derived_arg_names(key)}(key.args) user_func(runtime, key.args...)
             end
             # NOTE: We use `isequal` for the Early Exit Optimization, since values are
             # required to be purely immutable (but not necessarily julia `immutable
