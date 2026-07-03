@@ -41,7 +41,7 @@ const g_threadlocal_pool_locks = Base.ReentrantLock[]
 # to be big enough where it doesn't have to get doubled very often. The traces will double
 # whenever we have more active derived functions than available traces, which should only
 # happen for very-long chains of derived functions or very-wide task parallelism.
-const N_INIT_TRACES = @static Int===Int32 ? 512 : 1024
+const N_INIT_TRACES = 1024
 
 # This function is called in Salsa.__init__() because we don't know the
 # number of threads until runtime. (__init__() is defined at the end of this file.)
