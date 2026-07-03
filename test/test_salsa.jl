@@ -460,6 +460,61 @@ end
     @test recursive_cause_pool_growth(rt, 1) == SalsaSetup.NUM_TRACE_TEST_CALLS + 1
 end
 
+# NOTE: This test guards the stack-segmentation mechanism in `memoized_lookup`: each
+# derived-function call consumes multiple KiB of native stack, so without hopping to a
+# fresh task stack every STACK_SEGMENT_DEPTH levels, a chain this deep crashes the
+# process with an unrecoverable StackOverflowError (~80MiB of stack needed vs the 4MiB
+# task stack on 64-bit, 2MiB on 32-bit).
+@testitem "very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_chain(rt, n + 1) + 1
+        else
+            return deep_chain_base(rt)
+        end
+    end
+
+    @declare_input deep_chain_base(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_chain_base!(rt, 0)
+    @test deep_chain(rt, 1) == 20_000 - 1
+
+    # Invalidation and re-verification also traverse the full chain depth; make sure
+    # they survive and recompute correctly across segment boundaries.
+    Salsa.new_epoch!(rt)
+    set_deep_chain_base!(rt, 1)
+    @test deep_chain(rt, 1) == 20_000
+end
+
+@testitem "exceptions from very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Salsa: DerivedFunctionException
+
+    @derived function deep_throw_chain(rt, n::Int)::Int
+        if n < 2_000
+            return deep_throw_chain(rt, n + 1) + 1
+        else
+            error("boom at the bottom")
+        end
+    end
+
+    rt = new_test_rt()
+    # Exceptions must surface identically whether or not the chain crossed a
+    # stack-segment boundary: same wrapper type, same captured exception.
+    @test_throws DerivedFunctionException{ErrorException} deep_throw_chain(rt, 1)
+    exc = try
+        deep_throw_chain(rt, 1)
+        nothing
+    catch e
+        e
+    end
+    @test exc.captured_exception isa ErrorException
+    @test exc.captured_exception.msg == "boom at the bottom"
+end
+
 @testitem "task parallel derived functions invalidation" setup=[SalsaSetup] begin
     using .SalsaSetup: new_test_rt
 

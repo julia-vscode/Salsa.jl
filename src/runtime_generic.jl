@@ -1,6 +1,42 @@
 ########## Lookups
 
 function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
+    # Derived functions recurse through user code, so a deep chain of derived-function
+    # calls consumes native stack proportional to its depth and would eventually crash
+    # with an unrecoverable StackOverflowError. To support arbitrarily deep chains, we
+    # hop onto a fresh task stack every STACK_SEGMENT_DEPTH nested calls, so the
+    # recursion is bounded by heap size rather than stack size.
+    if _needs_fresh_stack(rt, dependency_key)
+        return _memoized_lookup_on_fresh_stack(rt, dependency_key)
+    end
+    return _memoized_lookup_impl(rt, dependency_key)
+end
+
+# Fallback: top-level calls and input lookups never need a fresh stack. The method for
+# nested derived-function calls is defined in runtime_tracing.jl.
+_needs_fresh_stack(::Runtime, ::DependencyKey) = false
+
+@noinline function _memoized_lookup_on_fresh_stack(rt::Runtime, dependency_key::DependencyKey)
+    t = Task(() -> _memoized_lookup_impl(rt, dependency_key))
+    # The child task must stay on this thread: traces are pooled per-thread, and
+    # `release_trace_id` returns a trace to the *current* thread's freelist.
+    t.sticky = true
+    schedule(t)
+    try
+        return fetch(t)
+    catch e
+        if e isa TaskFailedException
+            # The child's exception is already wrapped in a DerivedFunctionException
+            # (with the complete Salsa trace) by `_memoized_lookup_impl`'s catch block,
+            # so rethrow that directly: exceptions must surface identically whether or
+            # not the chain happened to cross a stack-segment boundary.
+            throw(ExceptionUnwrapping.unwrap_exception(e))
+        end
+        rethrow()
+    end
+end
+
+function _memoized_lookup_impl(rt::Runtime, dependency_key::DependencyKey)
     # NOTE: It is important that the tracing happens around all internal computations for
     # derived functions and input functions, as we want to be sure we record _all_
     # dependencies, even those where the result is already cached.

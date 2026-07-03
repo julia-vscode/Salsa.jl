@@ -26,6 +26,11 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
     # because we create a new instance of this struct on _every function call_ in Salsa!
     immediate_dependencies_id::TraceId
 
+    # The nesting depth of derived-function calls that led to this runtime. Used to hop
+    # onto a fresh task stack every STACK_SEGMENT_DEPTH levels, since deep chains of
+    # derived functions would otherwise overflow the native stack (see memoized_lookup).
+    depth::Int32
+
     function @__MODULE__().new_trace_runtime!(
         old_rt::_TopLevelRuntime{CT,ST},
         key::DependencyKey,
@@ -38,6 +43,7 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
             else
                 get_trace_with_call_stack(nothing)
             end,
+            Int32(1),
         )
     end
 
@@ -53,8 +59,20 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
         else
             get_trace_with_call_stack(nothing)
         end
-        new{CT,ST}(old_rt.tl_runtime, new_trace)
+        new{CT,ST}(old_rt.tl_runtime, new_trace, old_rt.depth + Int32(1))
     end
+end
+
+# Each nested derived-function call costs several KiB of native stack across the Salsa
+# machinery, so a fresh task stack (4MiB on 64-bit, 2MiB on 32-bit) comfortably fits
+# STACK_SEGMENT_DEPTH levels of Salsa frames while leaving at least half the stack for
+# the user functions' own frames.
+const STACK_SEGMENT_DEPTH = Int32(Sys.WORD_SIZE == 64 ? 512 : 256)
+
+# Only nested derived-function calls recurse arbitrarily deep; input lookups never
+# re-enter user code (see also the fallback in runtime_generic.jl).
+function _needs_fresh_stack(rt::_TracingRuntime, ::DerivedKey)
+    return rt.depth % STACK_SEGMENT_DEPTH == 0
 end
 
 function push_key!(rt::_TracingRuntime, depkey)
