@@ -137,7 +137,30 @@ function release_trace_id(id::TraceId)
     return nothing
 end
 
+# Traces that recorded more than this many dependencies get fresh containers on
+# release instead of being cleared in place. Pooled containers keep their
+# high-water-mark capacity forever, and clearing a Dict/Set costs O(capacity)
+# even when it holds no elements (boxed keys are unset one by one) — so without
+# the replacement, a single wide derived function would tax every later lookup
+# that reuses its pooled trace.
+const TRACE_CONTAINER_SHRINK_THRESHOLD = 256
+
 function empty_trace!(trace::TraceOfDependencyKeys)
-    empty!(trace.ordered_deps)
-    empty!(trace.seen_deps)
+    # The dependency-array swap optimization in `_memoized_lookup_internal` can
+    # leave `ordered_deps` empty while `seen_deps` still holds every recorded
+    # key, so both containers must be considered.
+    n = max(length(trace.ordered_deps), length(trace.seen_deps))
+    if n == 0
+        # Nothing to clear. This is the hot path: verification-only lookups
+        # (`should_trace` off) release their trace untouched, and must not pay
+        # for the capacity of whatever used this trace before.
+        return
+    elseif n > TRACE_CONTAINER_SHRINK_THRESHOLD
+        trace.ordered_deps = sizehint!(Vector{DependencyKey}(), TRACE_INITIAL_CAPACITY)
+        trace.seen_deps = sizehint!(Set{DependencyKey}(), TRACE_INITIAL_CAPACITY)
+    else
+        empty!(trace.ordered_deps)
+        empty!(trace.seen_deps)
+    end
+    return
 end
