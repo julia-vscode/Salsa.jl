@@ -726,3 +726,44 @@ end
     @test overrideable(rt, 2) == 777
     @test call_count[] == 1  # No extra lazy calls
 end
+
+# NOTE: This test is testing internal aspects of the package, not the public API.
+@testitem "Trace pool: wide traces do not permanently retain capacity" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @declare_input entry(rt, i::Int)::Int
+
+    @derived function wide_sum(rt, n::Int)::Int
+        s = 0
+        for i in 1:n
+            s += entry(rt, i)
+        end
+        return s
+    end
+
+    rt = new_test_rt()
+
+    n = 4 * Salsa.TRACE_CONTAINER_SHRINK_THRESHOLD
+    for i in 1:n
+        set_entry!(rt, i, i)
+    end
+
+    @test wide_sum(rt, n) == sum(1:n)
+
+    # Releasing the wide trace must not leave oversized containers in the pool.
+    # Pooled containers otherwise keep their high-water-mark capacity forever,
+    # and clearing a Dict/Set costs O(capacity) even when it is empty — so a
+    # single wide derived function would tax every later lookup that reuses its
+    # pooled trace.
+    max_slots = maximum(
+        length(tr.seen_deps.dict.slots)
+        for pool in Salsa.g_threadlocal_trace_pools for tr in pool
+    )
+    @test max_slots <= 4 * Salsa.TRACE_CONTAINER_SHRINK_THRESHOLD
+
+    # The replaced containers must still trace correctly: invalidate one input
+    # and verify the wide function recomputes through the same pooled traces.
+    Salsa.new_epoch!(rt)
+    set_entry!(rt, 1, 101)
+    @test wide_sum(rt, n) == sum(1:n) + 100
+end
