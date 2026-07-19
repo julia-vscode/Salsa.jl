@@ -71,9 +71,16 @@ end
 
 ########## Implementation of Runtime API
 
-context(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).context
+# NOTE: `unsafe_load` on a Ptr to a mutable struct materializes a *copy*
+# (one allocation per call, and these are called on every lookup); the
+# pointer came from `pointer_from_objref`, so recover the object itself.
+function _tl_runtime(rt::_TracingRuntime{CT,ST}) where {CT,ST}
+    return Base.unsafe_pointer_to_objref(Ptr{Cvoid}(rt.tl_runtime))::_TopLevelRuntime{CT,ST}
+end
 
-storage(rt::_TracingRuntime) = unsafe_load(rt.tl_runtime).storage
+context(rt::_TracingRuntime) = _tl_runtime(rt).context
+
+storage(rt::_TracingRuntime) = _tl_runtime(rt).storage
 
 trace(rt::_TracingRuntime) = get_trace(rt.immediate_dependencies_id)
 
