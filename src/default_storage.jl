@@ -332,13 +332,29 @@ end
 
 # A `value` is still valid if none of its dependencies have changed.
 function still_valid(runtime, value)
+    storage = Salsa.storage(runtime)
     for depkey in value.dependencies
-        dep_changed_at = key_changed_at(runtime, depkey)
+        dep_changed_at = _key_changed_at(runtime, storage, depkey)
         if dep_changed_at > value.verified_at
             return false
         end
     end # for
     return true
+end
+
+# Public entry point; unused internally (callers thread `storage` via `_key_changed_at`).
+key_changed_at(runtime, key::DependencyKey) = _key_changed_at(runtime, Salsa.storage(runtime), key)
+
+# Manual union split: with `key` narrowed by `isa`, each call below resolves
+# to exactly one (@nospecialize'd) method, so the isbits runtime is passed
+# unboxed — a dynamic dispatch here would box it (and the returned Int) once
+# per dependency edge, tens of MB of garbage per whole-graph verification.
+Base.@inline function _key_changed_at(runtime, storage::DefaultStorage, key::DependencyKey)::Revision
+    if key isa InputKey
+        return _input_changed_at(runtime, storage, key)
+    else
+        return _derived_changed_at(runtime, storage, key)
+    end
 end
 
 # Verification fast path: pure verification needs no trace bookkeeping (deps
@@ -347,25 +363,33 @@ end
 # holds it >= 1, so `current_revision` is stable here — the same invariant the
 # slow path relies on). One lock + one probe per node; anything that needs
 # recomputation (or a lazy-input fill) falls back to the full traced
-# `memoized_lookup`.
-function key_changed_at(runtime, key::InputKey)
-    storage = Salsa.storage(runtime)
+# `memoized_lookup`. `key` is deliberately unspecialized: one compiled
+# instance regardless of the key's function/argument types.
+function _input_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::InputKey))::Revision
     v = @lock storage.lock get(storage.inputs_map, key, nothing)
     v === nothing && return _changed_at(memoized_lookup(runtime, key))
     return v.changed_at
 end
 
-function key_changed_at(runtime, key::DerivedKey{F,TT}) where {F,TT}
-    storage = Salsa.storage(runtime)
+# Typed probe behind a function barrier: inside, the key's args tuple is
+# extracted unboxed and the dict lookup is fully typed. The (single) dynamic
+# dispatch here allocates nothing — both arguments are already heap values.
+# NOTE: `DerivedValue{Any}` here (and the assert below) relies on `RT = Any`
+# in `_memoized_lookup_internal`; strongly typing the value would break these.
+_probe_derived(map::Dict{TT,DerivedValue{Any}}, key::DerivedKey{F,TT}) where {F,TT} =
+    get(map, key.args, nothing)
+
+function _derived_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::DerivedKey))::Revision
     local v
     @lock storage.lock begin
-        map = get(storage.derived_function_maps, DerivedKey{F,TT}, nothing)
-        v = map === nothing ? nothing : get(map::Dict{TT,DerivedValue{Any}}, key.args, nothing)
+        map = get(storage.derived_function_maps, typeof(key), nothing)
+        v = map === nothing ? nothing : _probe_derived(map, key)
     end
     v === nothing && return _changed_at(memoized_lookup(runtime, key))
+    v = v::DerivedValue{Any}
     v.verified_at == storage.current_revision && return v.changed_at
     for dep in v.dependencies
-        if key_changed_at(runtime, dep) > v.verified_at
+        if _key_changed_at(runtime, storage, dep) > v.verified_at
             return _changed_at(memoized_lookup(runtime, key))
         end
     end
