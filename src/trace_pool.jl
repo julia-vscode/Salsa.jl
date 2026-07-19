@@ -41,6 +41,12 @@ const g_threadlocal_pool_locks = Base.ReentrantLock[]
 # to be big enough where it doesn't have to get doubled very often. The traces will double
 # whenever we have more active derived functions than available traces, which should only
 # happen for very-long chains of derived functions or very-wide task parallelism.
+#
+# NOTE: 1024 is safe on all platforms (including 32-bit, which historically used 512):
+# the deep recursion that made large values risky — the pool-growth test recursing
+# N_INIT_TRACES + 5 derived calls on the native stack — is now bounded by the
+# stack-segmentation hops in `memoized_lookup` (see STACK_SEGMENT_DEPTH), which was
+# the failure behind pinning this to 512 in 121a5ba.
 const N_INIT_TRACES = 1024
 
 # This function is called in Salsa.__init__() because we don't know the

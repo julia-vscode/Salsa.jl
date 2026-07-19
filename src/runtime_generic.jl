@@ -28,6 +28,14 @@ end
 # Run `f()` on a freshly scheduled task and return its result, so that `f`'s recursion
 # continues from an empty native stack. Used for the stack-segment hops in both
 # `memoized_lookup` and the verification fast path (`_derived_changed_at`).
+# Two intentional, documented differences vs. plain recursion:
+#   - Native backtraces (`catch_backtrace()`, `current_exceptions()`) are truncated at
+#     segment boundaries and gain a TaskFailedException "caused by" entry; the Salsa
+#     trace carried inside DerivedFunctionException is complete and unaffected.
+#   - If the caller is interrupted while blocked in `fetch` (e.g. InterruptException),
+#     the child segment keeps running detached until it finishes: it releases its
+#     traces safely, but holds `derived_functions_active` up until then, so an
+#     immediate subsequent `set_input!` can fail its no-active-deriveds assertion.
 @noinline function _call_on_fresh_stack(f)
     ct = current_task()
     parent_was_sticky = ct.sticky

@@ -579,6 +579,8 @@ end
     rt = new_test_rt()
     # Exceptions must surface identically whether or not the chain crossed a
     # stack-segment boundary: same wrapper type, same captured exception.
+    # (2_000 levels = at least 3 segment boundaries at STACK_SEGMENT_DEPTH = 512;
+    # if STACK_SEGMENT_DEPTH grows past 2_000 this test stops covering the hop path.)
     @test_throws DerivedFunctionException{ErrorException} deep_throw_chain(rt, 1)
     exc = try
         deep_throw_chain(rt, 1)
