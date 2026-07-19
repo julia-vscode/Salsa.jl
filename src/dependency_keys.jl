@@ -49,11 +49,14 @@ end
 const INPUT_KEY_SEED = hash(codeunits(string(InputKey)))
 const DERIVED_KEY_SEED = hash(codeunits(string(DerivedKey)))
 
+# Hash the function *type* (objectid-based, ~ns) rather than `string(F)`'s
+# codeunits (~1 µs + 500 B per hash). InputKeys share one big dict, so every
+# input probe pays this hash — it dominated warm verification sweeps.
 function Base.hash(x::InputKey{F}, h::UInt) where {F}
-    return hash(x.args, hash(codeunits(string(F)), h + INPUT_KEY_SEED))
+    return hash(x.args, hash(F, h + INPUT_KEY_SEED))
 end
 function Base.hash(x::DerivedKey{F}, h::UInt) where {F}
-    return hash(x.args, hash(codeunits(string(F)), h + DERIVED_KEY_SEED))
+    return hash(x.args, hash(F, h + DERIVED_KEY_SEED))
 end
 
 # Override `Base.show` to minimize redundant printing (skip module name).

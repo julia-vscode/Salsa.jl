@@ -341,8 +341,38 @@ function still_valid(runtime, value)
     return true
 end
 
-function key_changed_at(runtime, key::DependencyKey)
-    return _changed_at(memoized_lookup(runtime, key))
+# Verification fast path: pure verification needs no trace bookkeeping (deps
+# aren't recorded during still_valid anyway) and no `derived_functions_active`
+# accounting (the caller sits inside `_memoized_lookup_internal`, which already
+# holds it >= 1, so `current_revision` is stable here — the same invariant the
+# slow path relies on). One lock + one probe per node; anything that needs
+# recomputation (or a lazy-input fill) falls back to the full traced
+# `memoized_lookup`.
+function key_changed_at(runtime, key::InputKey)
+    storage = Salsa.storage(runtime)
+    v = @lock storage.lock get(storage.inputs_map, key, nothing)
+    v === nothing && return _changed_at(memoized_lookup(runtime, key))
+    return v.changed_at
+end
+
+function key_changed_at(runtime, key::DerivedKey{F,TT}) where {F,TT}
+    storage = Salsa.storage(runtime)
+    local v
+    @lock storage.lock begin
+        map = get(storage.derived_function_maps, DerivedKey{F,TT}, nothing)
+        v = map === nothing ? nothing : get(map::Dict{TT,DerivedValue{Any}}, key.args, nothing)
+    end
+    v === nothing && return _changed_at(memoized_lookup(runtime, key))
+    v.verified_at == storage.current_revision && return v.changed_at
+    for dep in v.dependencies
+        if key_changed_at(runtime, dep) > v.verified_at
+            return _changed_at(memoized_lookup(runtime, key))
+        end
+    end
+    # All deps unchanged since this value was last verified: mark it verified
+    # at the current revision. Same unlocked write the slow path does.
+    v.verified_at = storage.current_revision
+    return v.changed_at
 end
 
 # =============================================================================
