@@ -24,23 +24,36 @@ end
 # continues from an empty native stack. Used for the stack-segment hops in both
 # `memoized_lookup` and the verification fast path (`_derived_changed_at`).
 @noinline function _call_on_fresh_stack(f)
-    t = Task(f)
-    # The child task must stay on this thread: traces are pooled per-thread, and
-    # `release_trace_id` returns a trace to the *current* thread's freelist.
-    t.sticky = true
-    schedule(t)
+    ct = current_task()
+    parent_was_sticky = ct.sticky
+    # Pin the calling task too, not just the child: blocking in `fetch` below is a
+    # scheduling point, and Julia may resume a non-sticky task (e.g. one started via
+    # `Threads.@spawn`) on a *different* thread afterwards. The caller holds trace ids
+    # acquired from this thread's pool, which must be released on this same thread
+    # (see `release_trace_id`). Restored on exit so we don't change the caller's
+    # scheduling behavior beyond the hop.
+    ct.sticky = true
     try
-        return fetch(t)
-    catch e
-        if e isa TaskFailedException
-            # Salsa exceptions arrive at segment boundaries already wrapped in a
-            # DerivedFunctionException (with the complete Salsa trace) by
-            # `_memoized_lookup_impl`'s catch block, so rethrow the child's exception
-            # directly: exceptions must surface identically whether or not the chain
-            # happened to cross a stack-segment boundary.
-            throw(ExceptionUnwrapping.unwrap_exception(e))
+        t = Task(f)
+        # The child task must stay on this thread: traces are pooled per-thread, and
+        # `release_trace_id` returns a trace to the *current* thread's freelist.
+        t.sticky = true
+        schedule(t)
+        try
+            return fetch(t)
+        catch e
+            if e isa TaskFailedException
+                # Salsa exceptions arrive at segment boundaries already wrapped in a
+                # DerivedFunctionException (with the complete Salsa trace) by
+                # `_memoized_lookup_impl`'s catch block, so rethrow the child's
+                # exception directly: exceptions must surface identically whether or
+                # not the chain happened to cross a stack-segment boundary.
+                throw(ExceptionUnwrapping.unwrap_exception(e))
+            end
+            rethrow()
         end
-        rethrow()
+    finally
+        ct.sticky = parent_was_sticky
     end
 end
 

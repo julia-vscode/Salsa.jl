@@ -489,6 +489,29 @@ end
     @test deep_chain(rt, 1) == 20_000
 end
 
+@testitem "very deep derived-function chains from spawned tasks" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_spawn_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_spawn_chain(rt, n + 1) + 1
+        else
+            return deep_spawn_base(rt)
+        end
+    end
+
+    @declare_input deep_spawn_base(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_spawn_base!(rt, 0)
+    # Called from a non-sticky spawned task: every segment hop blocks that task in
+    # `fetch`, a scheduling point at which an unpinned task could in principle resume
+    # on a different thread — while holding trace ids that must be released on the
+    # thread that acquired them. `_call_on_fresh_stack` pins the calling task for the
+    # duration of the hop; this locks that invariant in under a real spawn.
+    @test fetch(Threads.@spawn deep_spawn_chain(rt, 1)) == 20_000 - 1
+end
+
 # NOTE: This test guards the *pure verification* descent: bumping the revision via an
 # unrelated input forces the next call to re-verify every node in the chain
 # (`_derived_changed_at` recursion) without recomputing anything. That descent must
