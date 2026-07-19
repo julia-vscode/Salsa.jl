@@ -313,6 +313,27 @@ end
     end
 end
 
+@testitem "cycle detection across stack-segment boundaries" setup=[SalsaSetup] begin
+    using Salsa: DependencyCycleException, DerivedFunctionException
+    using .SalsaSetup: new_test_rt
+
+    # Recurse past at least one segment boundary (STACK_SEGMENT_DEPTH is 512 on 64-bit,
+    # 256 on 32-bit), then call back to a key that's on the stack *below* the boundary:
+    # the cycle-detection call stack must be intact across the hop.
+    @derived function deep_cycle(rt, n::Int)::Int
+        if n < 600
+            return deep_cycle(rt, n + 1)
+        else
+            return deep_cycle(rt, 1)
+        end
+    end
+
+    Salsa.@debug_mode begin
+        rt = new_test_rt()
+        @test_throws DerivedFunctionException{DependencyCycleException} deep_cycle(rt, 1)
+    end
+end
+
 @testitem "Multi-level derived functions that throw errors #1180" setup=[SalsaSetup, ErrorHandlingTests] begin
     using .SalsaSetup: new_test_rt
 
