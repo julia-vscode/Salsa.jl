@@ -489,6 +489,37 @@ end
     @test deep_chain(rt, 1) == 20_000
 end
 
+# NOTE: This test guards the *pure verification* descent: bumping the revision via an
+# unrelated input forces the next call to re-verify every node in the chain
+# (`_derived_changed_at` recursion) without recomputing anything. That descent must
+# hop stacks just like the compute path, or it overflows at ~15k levels.
+@testitem "pure re-verification of very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_verify_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_verify_chain(rt, n + 1) + 1
+        else
+            return deep_verify_base(rt)
+        end
+    end
+
+    @declare_input deep_verify_base(rt)::Int
+    @declare_input deep_verify_unrelated(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_verify_base!(rt, 0)
+    set_deep_verify_unrelated!(rt, 0)
+    @test deep_verify_chain(rt, 1) == 20_000 - 1
+
+    # Changing an *unrelated* input bumps current_revision: the next call re-verifies
+    # the entire chain top-down and finds nothing changed. Must not overflow, and must
+    # return the same (still-valid) value.
+    Salsa.new_epoch!(rt)
+    set_deep_verify_unrelated!(rt, 1)
+    @test deep_verify_chain(rt, 1) == 20_000 - 1
+end
+
 @testitem "exceptions from very deep derived-function chains" setup=[SalsaSetup] begin
     using .SalsaSetup: new_test_rt
     using Salsa: DerivedFunctionException

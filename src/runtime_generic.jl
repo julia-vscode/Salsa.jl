@@ -17,7 +17,14 @@ end
 _needs_fresh_stack(::Runtime, ::DependencyKey) = false
 
 @noinline function _memoized_lookup_on_fresh_stack(rt::Runtime, dependency_key::DependencyKey)
-    t = Task(() -> _memoized_lookup_impl(rt, dependency_key))
+    return _call_on_fresh_stack(() -> _memoized_lookup_impl(rt, dependency_key))
+end
+
+# Run `f()` on a freshly scheduled task and return its result, so that `f`'s recursion
+# continues from an empty native stack. Used for the stack-segment hops in both
+# `memoized_lookup` and the verification fast path (`_derived_changed_at`).
+@noinline function _call_on_fresh_stack(f)
+    t = Task(f)
     # The child task must stay on this thread: traces are pooled per-thread, and
     # `release_trace_id` returns a trace to the *current* thread's freelist.
     t.sticky = true
@@ -26,15 +33,26 @@ _needs_fresh_stack(::Runtime, ::DependencyKey) = false
         return fetch(t)
     catch e
         if e isa TaskFailedException
-            # The child's exception is already wrapped in a DerivedFunctionException
-            # (with the complete Salsa trace) by `_memoized_lookup_impl`'s catch block,
-            # so rethrow that directly: exceptions must surface identically whether or
-            # not the chain happened to cross a stack-segment boundary.
+            # Salsa exceptions arrive at segment boundaries already wrapped in a
+            # DerivedFunctionException (with the complete Salsa trace) by
+            # `_memoized_lookup_impl`'s catch block, so rethrow the child's exception
+            # directly: exceptions must surface identically whether or not the chain
+            # happened to cross a stack-segment boundary.
             throw(ExceptionUnwrapping.unwrap_exception(e))
         end
         rethrow()
     end
 end
+
+# The segment counter for hop accounting: how many counted levels (derived-function
+# calls + verification levels) sit on the current task chain. Zero for runtimes that
+# haven't entered a derived function. The `_TracingRuntime` method lives in
+# runtime_tracing.jl.
+_segment_depth(::Runtime) = Int32(0)
+
+# Identity fallback; the depth-carrying method for `_TracingRuntime` lives in
+# runtime_tracing.jl.
+_with_segment_depth(rt::Runtime, ::Int32) = rt
 
 function _memoized_lookup_impl(rt::Runtime, dependency_key::DependencyKey)
     # NOTE: It is important that the tracing happens around all internal computations for

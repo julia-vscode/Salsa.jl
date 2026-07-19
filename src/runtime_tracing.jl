@@ -29,6 +29,12 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
     # The nesting depth of derived-function calls that led to this runtime. Used to hop
     # onto a fresh task stack every STACK_SEGMENT_DEPTH levels, since deep chains of
     # derived functions would otherwise overflow the native stack (see memoized_lookup).
+    #
+    # INVARIANT: `depth mod STACK_SEGMENT_DEPTH` upper-bounds the native stack frames
+    # consumed on the current task since the last stack-segment hop (counting one unit
+    # per derived-function level or per verification level — see `_derived_changed_at`,
+    # which threads this same counter through the verification descent and folds it
+    # back in via `_with_segment_depth` before triggering recomputations).
     depth::Int32
 
     function @__MODULE__().new_trace_runtime!(
@@ -61,6 +67,18 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
         end
         new{CT,ST}(old_rt.tl_runtime, new_trace, old_rt.depth + Int32(1))
     end
+
+    # Same runtime, new segment counter. Only the verification fast path uses this
+    # (see `_derived_changed_at`): its native recursion isn't tracked by
+    # `new_trace_runtime!`, so before it re-enters `memoized_lookup` for a
+    # recomputation it folds its own frame count into the runtime, keeping the
+    # invariant that `depth` upper-bounds native frames since the last stack hop.
+    function @__MODULE__()._with_segment_depth(
+        rt::_TracingRuntime{CT,ST},
+        depth::Int32,
+    )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
+        return new{CT,ST}(rt.tl_runtime, rt.immediate_dependencies_id, depth)
+    end
 end
 
 # Each nested derived-function call costs several KiB of native stack across the Salsa
@@ -74,6 +92,8 @@ const STACK_SEGMENT_DEPTH = Int32(Sys.WORD_SIZE == 64 ? 512 : 256)
 function _needs_fresh_stack(rt::_TracingRuntime, ::DerivedKey)
     return rt.depth % STACK_SEGMENT_DEPTH == 0
 end
+
+_segment_depth(rt::_TracingRuntime) = rt.depth
 
 function push_key!(rt::_TracingRuntime, depkey)
     tr = trace(rt)
