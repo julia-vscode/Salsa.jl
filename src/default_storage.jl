@@ -347,6 +347,12 @@ function still_valid(runtime, value)
 end
 
 # Public entry point; unused internally (callers thread `storage` via `_key_changed_at`).
+# NOTE: When called with a top-level (non-tracing) runtime, `_with_segment_depth` is an
+# identity fallback, so a recompute triggered from deep inside the verification descent
+# restarts the compute counter at 1 while up to STACK_SEGMENT_DEPTH - 1 verification
+# frames already sit on the native stack — worst case ~2x one segment's counted levels
+# before the next hop. Bounded (verification frames are small), just less headroom than
+# the internal, tracing-runtime path.
 function key_changed_at(runtime, key::DependencyKey)
     return _key_changed_at(
         runtime, Salsa.storage(runtime), key, Salsa._segment_depth(runtime) + Int32(1)
@@ -377,8 +383,10 @@ end
 # instance regardless of the key's function/argument types.
 function _input_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::InputKey))::Revision
     v = @lock storage.lock get(storage.inputs_map, key, nothing)
-    # No segment-depth accounting needed on this fallback: input lookups never
-    # re-enter user code, so they can't recurse (see `_needs_fresh_stack`).
+    # No segment-depth accounting needed on this fallback: input lookups can't recurse
+    # through Salsa. A lazy input's callback IS user code, but it receives only the user
+    # context — never a Runtime — so it cannot re-enter the derived-function machinery
+    # (see `_needs_fresh_stack` and `get_lazy_input_function`).
     v === nothing && return _changed_at(memoized_lookup(runtime, key))
     return v.changed_at
 end

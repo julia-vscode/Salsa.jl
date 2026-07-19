@@ -36,6 +36,9 @@ end
 #     the child segment keeps running detached until it finishes: it releases its
 #     traces safely, but holds `derived_functions_active` up until then, so an
 #     immediate subsequent `set_input!` can fail its no-active-deriveds assertion.
+#     (Pre-existing related hazard: the child's closure also captures the isbits
+#     runtime's raw pointer to the parent Runtime, which must stay alive until the
+#     child finishes.)
 @noinline function _call_on_fresh_stack(f)
     ct = current_task()
     parent_was_sticky = ct.sticky
