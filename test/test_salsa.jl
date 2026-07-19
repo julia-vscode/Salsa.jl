@@ -876,3 +876,28 @@ end
     set_entry!(rt, 1, 101)
     @test wide_sum(rt, n) == sum(1:n) + 100
 end
+
+@testitem "memoized_lookup stays inferrable despite stack hops" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function infer_probe(rt, n::Int)::Int
+        return n
+    end
+
+    const CAPTURED_RT_TYPE = Ref{Any}(nothing)
+    @derived function capture_runtime_type(rt)::Int
+        CAPTURED_RT_TYPE[] = typeof(rt)
+        return 0
+    end
+
+    rt = new_test_rt()
+    capture_runtime_type(rt)
+    TracingRT = CAPTURED_RT_TYPE[]
+    KeyT = Salsa.DerivedKey{typeof(infer_probe),Tuple{Int}}
+
+    # The hop's `fetch` returns `Any`; the hop wrapper must assert the result back to
+    # what the inline call would have returned, or every lookup — hop or not — pays
+    # for dynamic dispatch downstream (`_unwrap_salsa_value`, `_changed_at`).
+    inferred = only(Base.return_types(Salsa.memoized_lookup, (TracingRT, KeyT)))
+    @test inferred !== Any
+end

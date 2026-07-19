@@ -17,7 +17,12 @@ end
 _needs_fresh_stack(::Runtime, ::DependencyKey) = false
 
 @noinline function _memoized_lookup_on_fresh_stack(rt::Runtime, dependency_key::DependencyKey)
-    return _call_on_fresh_stack(() -> _memoized_lookup_impl(rt, dependency_key))
+    # `fetch` on the hop task infers `Any`, which would poison `memoized_lookup`'s
+    # return type for every lookup (shallow, non-hopping chains included) — assert the
+    # result back to exactly what the inline `_memoized_lookup_impl` call would have
+    # returned. `promote_op` is inference-based and constant-folds at compile time.
+    T = Base.promote_op(_memoized_lookup_impl, typeof(rt), typeof(dependency_key))
+    return _call_on_fresh_stack(() -> _memoized_lookup_impl(rt, dependency_key))::T
 end
 
 # Run `f()` on a freshly scheduled task and return its result, so that `f`'s recursion
