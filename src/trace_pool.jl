@@ -137,7 +137,52 @@ function release_trace_id(id::TraceId)
     return nothing
 end
 
+# Traces that recorded more than this many dependencies get fresh containers on
+# release instead of being cleared in place. Pooled containers keep their
+# high-water-mark capacity forever, and the replacement matters for different
+# reasons per container:
+#   - `seen_deps` (Set): `empty!` on a Dict/Set costs O(capacity) even when it
+#     holds no elements (every slot is swept unconditionally), so an oversized
+#     Set would tax every later release that reuses this pooled trace.
+#   - `ordered_deps` (Vector): `empty!` on a Vector is O(length), never
+#     O(capacity), so clearing stays cheap — replacing it only releases the
+#     retained high-water-mark memory.
+# Fresh containers are also cheaper than shrinking in place
+# (`sizehint!(c, n; shrink=true)` pays O(old capacity) on the release path to
+# rehash/copy the old table).
+const TRACE_CONTAINER_SHRINK_THRESHOLD = 256
+
 function empty_trace!(trace::TraceOfDependencyKeys)
-    empty!(trace.ordered_deps)
-    empty!(trace.seen_deps)
+    # Locked to guard against a straggler task racing `push_key!` against this
+    # release. Spawning tasks that outlive their derived function is documented
+    # as unsupported (see `collect_trace`) but cannot be detected; without the
+    # lock, such a task could observe one old and one new container around the
+    # replacement below, leaving `seen_deps` and `ordered_deps` inconsistent for
+    # the trace's next user. Uncontended in correct usage, so this is cheap.
+    @lock trace.lock begin
+        # The dependency-array swap optimization in `_memoized_lookup_internal`
+        # can leave `ordered_deps` empty while `seen_deps` still holds every
+        # recorded key, so both containers must be considered.
+        n = max(length(trace.ordered_deps), length(trace.seen_deps))
+        if n == 0
+            # Nothing to clear. This is the hot path: verification-only lookups
+            # (`should_trace` off) release their trace untouched, and must not
+            # pay the O(capacity) Set sweep for whatever used this trace before.
+        elseif n > TRACE_CONTAINER_SHRINK_THRESHOLD
+            # Reset to the threshold capacity, not TRACE_INITIAL_CAPACITY: the
+            # in-place branch below already tolerates containers of this size,
+            # and a derived function that is consistently wide would otherwise
+            # pay Vector reallocs and Set rehashes on every run to regrow from
+            # a tiny container (rehashing is especially costly here because
+            # `hash(::DependencyKey)` allocates).
+            trace.ordered_deps =
+                sizehint!(Vector{DependencyKey}(), TRACE_CONTAINER_SHRINK_THRESHOLD)
+            trace.seen_deps =
+                sizehint!(Set{DependencyKey}(), TRACE_CONTAINER_SHRINK_THRESHOLD)
+        else
+            empty!(trace.ordered_deps)
+            empty!(trace.seen_deps)
+        end
+    end
+    return
 end

@@ -9,6 +9,11 @@
 # potential downside is losing some ordering information if part of the function is serial
 # and part is parallel.
 #
+# Initial capacity of a trace's dependency containers. (Oversized traces are
+# reset to `TRACE_CONTAINER_SHRINK_THRESHOLD` capacity on release instead; see
+# `empty_trace!`.)
+const TRACE_INITIAL_CAPACITY = 30
+
 # NOTE: This is a mutable struct to allow us to modify the call_stack. This is fine because
 # it's not going to be isbits anyway due to all of the Vectors, Sets, and Locks, it
 # contains, and we are going to keep these in the trace pool (see explanation below).
@@ -44,13 +49,9 @@ mutable struct TraceOfDependencyKeys
         # Pre-allocate all traces to be non-empty, to minimize allocations at runtime.
         # These traces are all constructed once ahead of time in the per-thread trace pools,
         # so this initialization is only done once during Module __init__().
-        #
-        # TODO: Tune this. Too big wastes RAM (though, it's fixed cost up front).
-        #       Current size, 30, adds about 1MiB, which seems not bad.
-        N = 30
         return new(
-            sizehint!(Vector{DependencyKey}(), N),
-            sizehint!(Set{DependencyKey}(), N),
+            sizehint!(Vector{DependencyKey}(), TRACE_INITIAL_CAPACITY),
+            sizehint!(Set{DependencyKey}(), TRACE_INITIAL_CAPACITY),
             Base.ReentrantLock(),
             nothing,
             true,
