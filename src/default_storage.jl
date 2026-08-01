@@ -248,7 +248,7 @@ function Salsa._memoized_lookup_internal(
                 #   allocation and a copy by _swapping_ the `trace`'s `ordered_dependencies`
                 #   with `existing_value.dependencies`, so that the deps are written
                 #   in-place directly into their final destination! :)
-                trace = Salsa.get_trace(runtime.immediate_dependencies_id)
+                trace = Salsa.trace(runtime)
                 # Temporarily swap the dependency vectors while running user_func so the
                 # deps are recorded in-place. Note that we must swap them back at the end.
                 existing_value.dependencies, trace.ordered_deps =
