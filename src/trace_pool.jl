@@ -19,10 +19,12 @@
 # in a freshly allocated node (32 bytes), and the GC guarantees a node cannot be
 # reallocated while another task still holds a reference to it.
 #
-# Striping: all tasks CASing a single `top` pointer would contend under wide task
-# parallelism, so we keep several independent stacks ("stripes") and select one by the
-# identity of the current task. This is purely load-spreading; any task may pop from a
-# stripe that a different task pushed to.
+# Striping: all threads CASing a single `top` pointer would contend, so we keep one
+# independent stack ("stripe") per thread id, sized in `__init__` once the runtime thread
+# count is known. This is purely load-spreading; any thread may pop from a stripe that a
+# different thread pushed to, so it is harmless that `Threads.threadid()` can change
+# across yield points, and that threads adopted after startup (whose ids exceed the
+# init-time count) wrap onto shared stripes via the index mask.
 #
 # The pool starts empty and grows organically: if a task finds its stripe empty, it simply
 # allocates a fresh trace, which enters the pool when released. Steady-state pool size is
@@ -45,14 +47,15 @@ mutable struct TraceStack
     TraceStack() = new(nothing)
 end
 
-const N_TRACE_POOL_STRIPES = 8  # power of two, so the modulus below is a bit-mask
-const g_trace_pool_stripes = [TraceStack() for _ = 1:N_TRACE_POOL_STRIPES]
+# Placeholder size for precompile time; `__init__` resizes to cover every thread id.
+# Never empty: an empty array would make the mask below -1 (i.e. `@inbounds` UB) for
+# anything touching the pool before `__init__`, such as a future precompile workload.
+# The length is always a power of two (so the modulus below is a bit-mask) and never
+# changes after `__init__`, which makes the unsynchronized `length` read below safe.
+const g_trace_pool_stripes = [TraceStack()]
 
-# Stripe selection must not use `Threads.threadid()` (unstable across yield points due to
-# task migration). `objectid` of the current task is stable for the task's lifetime; the
-# low bits are shifted off since heap alignment makes them constant.
 @inline function _trace_pool_stripe()::TraceStack
-    idx = (objectid(current_task()) >> 4) % N_TRACE_POOL_STRIPES + 1
+    idx = Threads.threadid() & (length(g_trace_pool_stripes) - 1) + 1
     return @inbounds g_trace_pool_stripes[idx]
 end
 
