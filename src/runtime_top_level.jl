@@ -12,11 +12,10 @@ Runtime{CT}(ctx::CT = CT()) where {CT} = Runtime{CT,DefaultStorage}(ctx, Default
 Runtime(st) = Runtime{EmptyContext,DefaultStorage}(EmptyContext(), st)
 Runtime() = Runtime(DefaultStorage())  # Equivalent to DefaultRuntime()
 
-# This is the top-level Runtime object which users will instantiate for using Salsa. We mark
-# the _TopLevelRuntime as mutable, so that we can take its pointer_from_objref(). It will
-# very likely be not isbits anyway, since the users' storage objects are unlikely to be
-# isbits. It's a bit annoying that this is mutable, because its contents really musn't ever
-# change, but here we are.
+# This is the top-level Runtime object which users will instantiate for using Salsa.
+# NOTE: This struct no longer needs to be mutable (the old `pointer_from_objref` trick is
+# gone), but remains so for backwards compatibility with code that assumes identity
+# semantics.
 mutable struct _TopLevelRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
     # Store the user-provided context object, where they can store per-runtime meta-data
     # that does not affect Salsa invalidation / re-evaluation.

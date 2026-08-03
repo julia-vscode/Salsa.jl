@@ -21,7 +21,9 @@
         return out
     end
 
-    const NUM_TRACE_TEST_CALLS = Salsa.N_INIT_TRACES + 5  # Plus a few extra for good measure.
+    # Deep enough to exhaust any pooled traces and force the pool-growth (fresh
+    # allocation) path many times over.
+    const NUM_TRACE_TEST_CALLS = 517
 end
 
 # NOTE: This test file expects `new_test_rt([ctx,])` to be defined before it is called,
@@ -452,7 +454,7 @@ end
 
 
 # NOTE: This test is testing internal aspects of the package, not the public API.
-@testitem "Growing the trace pool freelist" setup=[SalsaSetup] begin
+@testitem "Growing the trace pool" setup=[SalsaSetup] begin
     using .SalsaSetup: new_test_rt
 
     @derived function recursive_cause_pool_growth(rt, n::Int)::Int
@@ -470,8 +472,8 @@ end
 
     set_base_value!(rt, 0)
 
-    # Create more than Salsa.N_INIT_TRACES derived function calls to force a growth
-    # event of the trace pool + freelist.
+    # Create a deep chain of derived function calls to force the pool to grow (an empty
+    # stripe allocates a fresh trace, which joins the pool on release).
     @test recursive_cause_pool_growth(rt, 1) == SalsaSetup.NUM_TRACE_TEST_CALLS
 
     # Now test that the dependencies were recorded correctly, and everything reruns
@@ -525,11 +527,8 @@ end
 
     rt = new_test_rt()
     set_deep_spawn_base!(rt, 0)
-    # Called from a non-sticky spawned task: every segment hop blocks that task in
-    # `fetch`, a scheduling point at which an unpinned task could in principle resume
-    # on a different thread — while holding trace ids that must be released on the
-    # thread that acquired them. `_call_on_fresh_stack` pins the calling task for the
-    # duration of the hop; this locks that invariant in under a real spawn.
+    # Called from a spawned task to ensure stack-segment hops remain correct in a
+    # migrated-task setting as well.
     @test fetch(Threads.@spawn deep_spawn_chain(rt, 1)) == 20_000 - 1
 end
 
@@ -888,8 +887,7 @@ end
     # single wide derived function would tax every later lookup that reuses its
     # pooled trace.
     max_slots = maximum(
-        length(tr.seen_deps.dict.slots)
-        for pool in Salsa.g_threadlocal_trace_pools for tr in pool
+        length(tr.seen_deps.dict.slots) for tr in Salsa._pooled_traces()
     )
     @test max_slots <= 4 * Salsa.TRACE_CONTAINER_SHRINK_THRESHOLD
 
