@@ -7,24 +7,20 @@
 # parallel on multiple threads. This makes the Runtime thread-safe, as long as it's used
 # correctly.
 struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
-    # NOTE: We store a Ptr{} to the parent Runtime rather than the Storage instance itself,
-    # in order to keep this struct as `isbits`. This is super critical because we create a
-    # new instance of this struct on _every function call_ in Salsa!  We also use this
-    # pointer to allow derived functions to access their Runtime's context.
+    # The parent Runtime, through which derived functions access their Runtime's context
+    # and storage.
     #
-    # This is guaranteed to be safe, since the parent Runtime will always exist until the
-    # function call that created this tracing runtime has completed.
-    tl_runtime::Ptr{_TopLevelRuntime{CT,ST}}
+    # NOTE: This struct holds heap references but is itself immutable, so creating one per
+    # derived function call does not allocate (immutable structs with references are
+    # stack-allocated since Julia 1.5). The isbits/Ptr tricks previously used here are no
+    # longer needed.
+    tl_runtime::_TopLevelRuntime{CT,ST}
 
     # A trace structure to store the dependencies of derived functions as they are
-    # encountered. This field is mutable, but we create a new, empty trace every time we
-    # branch the Runtime. It's locked internally to allow spawned derived functions on
-    # separate threads to record dependencies to the parent thread.
-    #
-    # NOTE: We store an index into `tls_trace_pool()`, rather than a `TraceOfDependencyKeys`
-    # object itself here, in order to keep this struct as `isbits`. This is super critical
-    # because we create a new instance of this struct on _every function call_ in Salsa!
-    immediate_dependencies_id::TraceId
+    # encountered. The trace is mutable, but we take a fresh, empty one from the trace pool
+    # every time we branch the Runtime. It's locked internally to allow spawned derived
+    # functions on separate threads to record dependencies to the parent task's trace.
+    immediate_dependencies::TraceOfDependencyKeys
 
     # The nesting depth of derived-function calls that led to this runtime. Used to hop
     # onto a fresh task stack every STACK_SEGMENT_DEPTH levels, since deep chains of
@@ -42,7 +38,7 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
         key::DependencyKey,
     )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
         new{CT,ST}(
-            reinterpret(Ptr{ST}, pointer_from_objref(old_rt)),
+            old_rt,
             # Start a new, empty trace (with the provided call stack if in debug mode)
             if Salsa.Debug.debug_enabled()
                 get_trace_with_call_stack(SalsaStackFrame(key, nothing))
@@ -109,18 +105,11 @@ end
 
 ########## Implementation of Runtime API
 
-# NOTE: `unsafe_load` on a Ptr to a mutable struct materializes a *copy*
-# (one allocation per call, and these are called on every lookup); the
-# pointer came from `pointer_from_objref`, so recover the object itself.
-function _tl_runtime(rt::_TracingRuntime{CT,ST}) where {CT,ST}
-    return Base.unsafe_pointer_to_objref(Ptr{Cvoid}(rt.tl_runtime))::_TopLevelRuntime{CT,ST}
-end
+context(rt::_TracingRuntime) = rt.tl_runtime.context
 
-context(rt::_TracingRuntime) = _tl_runtime(rt).context
+storage(rt::_TracingRuntime) = rt.tl_runtime.storage
 
-storage(rt::_TracingRuntime) = _tl_runtime(rt).storage
-
-trace(rt::_TracingRuntime) = get_trace(rt.immediate_dependencies_id)
+trace(rt::_TracingRuntime) = rt.immediate_dependencies
 
 collect_call_stack(rt::_TracingRuntime) = _collect_call_stack_frames(trace(rt).call_stack)
 _collect_call_stack_frames(::Nothing) = DependencyKey[]
@@ -129,7 +118,7 @@ _collect_call_stack_frames(frame::SalsaStackFrame) = collect(frame)
 collect_trace(rt::_TracingRuntime) = collect_trace(trace(rt))
 
 function destruct_trace!(rt::_TracingRuntime)
-    release_trace_id(rt.immediate_dependencies_id)
+    release_trace(rt.immediate_dependencies)
     return nothing
 end
 

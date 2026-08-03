@@ -80,13 +80,12 @@ function Base.show(io::IO, rt::_TopLevelRuntime{EmptyContext,DefaultStorage})
     print(io, "Salsa.Runtime($(rt.storage))")
 end
 
-# Initialize at top level so trace pools are available during precompilation workloads.
-_init_thread_local_pools_and_freelists()
-
 function __init__()
-    # Re-initialize at runtime with the correct thread count.
-    empty!(g_threadlocal_trace_pools)
-    empty!(g_threadlocal_trace_freelists)
-    empty!(g_threadlocal_pool_locks)
-    _init_thread_local_pools_and_freelists()
+    # The runtime thread count isn't known at precompile time, so build the stripes here:
+    # one per thread id, rounded up to a power of two to keep the index mask cheap.
+    # Rebuilding also drops any traces pooled during precompilation workloads.
+    empty!(g_trace_pool_stripes)
+    for _ = 1:nextpow(2, Threads.maxthreadid())
+        push!(g_trace_pool_stripes, TraceStack())
+    end
 end

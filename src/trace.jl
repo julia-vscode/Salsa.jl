@@ -46,9 +46,9 @@ mutable struct TraceOfDependencyKeys
     # We always create a new, empty TraceOfDependencyKeys for each derived function, since
     # we're only tracing the immediate dependencies of that function.
     function TraceOfDependencyKeys()
-        # Pre-allocate all traces to be non-empty, to minimize allocations at runtime.
-        # These traces are all constructed once ahead of time in the per-thread trace pools,
-        # so this initialization is only done once during Module __init__().
+        # Pre-allocate the containers to be non-empty, to minimize allocations at runtime.
+        # Traces are recycled through the trace pool, so this cost is only paid when the
+        # pool grows.
         return new(
             sizehint!(Vector{DependencyKey}(), TRACE_INITIAL_CAPACITY),
             sizehint!(Set{DependencyKey}(), TRACE_INITIAL_CAPACITY),
