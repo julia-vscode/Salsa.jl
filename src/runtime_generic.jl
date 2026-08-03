@@ -40,39 +40,22 @@ end
 #     runtime's raw pointer to the parent Runtime, which must stay alive until the
 #     child finishes.)
 @noinline function _call_on_fresh_stack(f)
-    ct = current_task()
-    parent_was_sticky = ct.sticky
-    # Pin the calling task too, not just the child: blocking in `fetch` below is a
-    # scheduling point, and Julia may resume a non-sticky task (e.g. one started via
-    # `Threads.@spawn`) on a *different* thread afterwards. The caller holds trace ids
-    # acquired from this thread's pool, which must be released on this same thread
-    # (see `release_trace_id`). Restored on exit so we don't change the caller's
-    # scheduling behavior beyond the hop.
-    ct.sticky = true
+    t = Task(f)
+    schedule(t)
     try
-        t = Task(f)
-        # The child task must stay on this thread: traces are pooled per-thread, and
-        # `release_trace_id` returns a trace to the *current* thread's freelist.
-        t.sticky = true
-        schedule(t)
-        try
-            return fetch(t)
-        catch e
-            if e isa TaskFailedException
-                # Salsa exceptions arrive at segment boundaries already wrapped in a
-                # DerivedFunctionException (with the complete Salsa trace) by
-                # `_memoized_lookup_impl`'s catch block, so rethrow the child's
-                # exception directly: exceptions must surface identically whether or
-                # not the chain happened to cross a stack-segment boundary.
-                throw(ExceptionUnwrapping.unwrap_exception(e))
-            end
-            rethrow()
+        return fetch(t)
+    catch e
+        if e isa TaskFailedException
+            # Salsa exceptions arrive at segment boundaries already wrapped in a
+            # DerivedFunctionException (with the complete Salsa trace) by
+            # `_memoized_lookup_impl`'s catch block, so rethrow the child's
+            # exception directly: exceptions must surface identically whether or
+            # not the chain happened to cross a stack-segment boundary.
+            throw(ExceptionUnwrapping.unwrap_exception(e))
         end
-    finally
-        ct.sticky = parent_was_sticky
+        rethrow()
     end
 end
-
 # The segment counter for hop accounting: how many counted levels (derived-function
 # calls + verification levels) sit on the current task chain. Zero for runtimes that
 # haven't entered a derived function. The `_TracingRuntime` method lives in

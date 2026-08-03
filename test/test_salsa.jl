@@ -527,11 +527,8 @@ end
 
     rt = new_test_rt()
     set_deep_spawn_base!(rt, 0)
-    # Called from a non-sticky spawned task: every segment hop blocks that task in
-    # `fetch`, a scheduling point at which an unpinned task could in principle resume
-    # on a different thread — while holding trace ids that must be released on the
-    # thread that acquired them. `_call_on_fresh_stack` pins the calling task for the
-    # duration of the hop; this locks that invariant in under a real spawn.
+    # Called from a spawned task to ensure stack-segment hops remain correct in a
+    # migrated-task setting as well.
     @test fetch(Threads.@spawn deep_spawn_chain(rt, 1)) == 20_000 - 1
 end
 

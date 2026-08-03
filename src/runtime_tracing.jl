@@ -73,7 +73,7 @@ struct _TracingRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
         rt::_TracingRuntime{CT,ST},
         depth::Int32,
     )::_TracingRuntime{CT,ST} where {CT,ST<:AbstractSalsaStorage}
-        return new{CT,ST}(rt.tl_runtime, rt.immediate_dependencies_id, depth)
+        return new{CT,ST}(rt.tl_runtime, rt.immediate_dependencies, depth)
     end
 end
 
