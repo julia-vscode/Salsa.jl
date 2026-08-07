@@ -2,7 +2,7 @@
 # tracing is enabled. This is currently shipped inside Salsa for convenience; it may be split
 # out into a standalone package once it has matured.
 include("TraceLogging.jl")
-using Salsa: TraceLogging
+import .TraceLogging
 
 using Base: @lock
 
