@@ -315,6 +315,27 @@ end
     end
 end
 
+@testitem "cycle detection across stack-segment boundaries" setup=[SalsaSetup] begin
+    using Salsa: DependencyCycleException, DerivedFunctionException
+    using .SalsaSetup: new_test_rt
+
+    # Recurse past at least one segment boundary (STACK_SEGMENT_DEPTH is 512 on 64-bit,
+    # 256 on 32-bit), then call back to a key that's on the stack *below* the boundary:
+    # the cycle-detection call stack must be intact across the hop.
+    @derived function deep_cycle(rt, n::Int)::Int
+        if n < 600
+            return deep_cycle(rt, n + 1)
+        else
+            return deep_cycle(rt, 1)
+        end
+    end
+
+    Salsa.@debug_mode begin
+        rt = new_test_rt()
+        @test_throws DerivedFunctionException{DependencyCycleException} deep_cycle(rt, 1)
+    end
+end
+
 @testitem "Multi-level derived functions that throw errors #1180" setup=[SalsaSetup, ErrorHandlingTests] begin
     using .SalsaSetup: new_test_rt
 
@@ -460,6 +481,114 @@ end
     set_base_value!(rt, 1)
 
     @test recursive_cause_pool_growth(rt, 1) == SalsaSetup.NUM_TRACE_TEST_CALLS + 1
+end
+
+# NOTE: This test guards the stack-segmentation mechanism in `memoized_lookup`: each
+# derived-function call consumes multiple KiB of native stack, so without hopping to a
+# fresh task stack every STACK_SEGMENT_DEPTH levels, a chain this deep crashes the
+# process with an unrecoverable StackOverflowError (~80MiB of stack needed vs the 4MiB
+# task stack on 64-bit, 2MiB on 32-bit).
+@testitem "very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_chain(rt, n + 1) + 1
+        else
+            return deep_chain_base(rt)
+        end
+    end
+
+    @declare_input deep_chain_base(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_chain_base!(rt, 0)
+    @test deep_chain(rt, 1) == 20_000 - 1
+
+    # Invalidation and re-verification also traverse the full chain depth; make sure
+    # they survive and recompute correctly across segment boundaries.
+    Salsa.new_epoch!(rt)
+    set_deep_chain_base!(rt, 1)
+    @test deep_chain(rt, 1) == 20_000
+end
+
+@testitem "very deep derived-function chains from spawned tasks" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_spawn_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_spawn_chain(rt, n + 1) + 1
+        else
+            return deep_spawn_base(rt)
+        end
+    end
+
+    @declare_input deep_spawn_base(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_spawn_base!(rt, 0)
+    # Called from a spawned task to ensure stack-segment hops remain correct in a
+    # migrated-task setting as well.
+    @test fetch(Threads.@spawn deep_spawn_chain(rt, 1)) == 20_000 - 1
+end
+
+# NOTE: This test guards the *pure verification* descent: bumping the revision via an
+# unrelated input forces the next call to re-verify every node in the chain
+# (`_derived_changed_at` recursion) without recomputing anything. That descent must
+# hop stacks just like the compute path, or it overflows at ~15k levels.
+@testitem "pure re-verification of very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function deep_verify_chain(rt, n::Int)::Int
+        if n < 20_000
+            return deep_verify_chain(rt, n + 1) + 1
+        else
+            return deep_verify_base(rt)
+        end
+    end
+
+    @declare_input deep_verify_base(rt)::Int
+    @declare_input deep_verify_unrelated(rt)::Int
+
+    rt = new_test_rt()
+    set_deep_verify_base!(rt, 0)
+    set_deep_verify_unrelated!(rt, 0)
+    @test deep_verify_chain(rt, 1) == 20_000 - 1
+
+    # Changing an *unrelated* input bumps current_revision: the next call re-verifies
+    # the entire chain top-down and finds nothing changed. Must not overflow, and must
+    # return the same (still-valid) value.
+    Salsa.new_epoch!(rt)
+    set_deep_verify_unrelated!(rt, 1)
+    @test deep_verify_chain(rt, 1) == 20_000 - 1
+end
+
+@testitem "exceptions from very deep derived-function chains" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+    using Salsa: DerivedFunctionException
+
+    @derived function deep_throw_chain(rt, n::Int)::Int
+        if n < 2_000
+            return deep_throw_chain(rt, n + 1) + 1
+        else
+            error("boom at the bottom")
+        end
+    end
+
+    rt = new_test_rt()
+    # Exceptions must surface identically whether or not the chain crossed a
+    # stack-segment boundary: same wrapper type, same captured exception.
+    # (2_000 levels = at least 3 segment boundaries at STACK_SEGMENT_DEPTH = 512;
+    # if STACK_SEGMENT_DEPTH grows past 2_000 this test stops covering the hop path.)
+    @test_throws DerivedFunctionException{ErrorException} deep_throw_chain(rt, 1)
+    exc = try
+        deep_throw_chain(rt, 1)
+        nothing
+    catch e
+        e
+    end
+    @test exc.captured_exception isa ErrorException
+    @test exc.captured_exception.msg == "boom at the bottom"
 end
 
 @testitem "task parallel derived functions invalidation" setup=[SalsaSetup] begin
@@ -767,4 +896,29 @@ end
     Salsa.new_epoch!(rt)
     set_entry!(rt, 1, 101)
     @test wide_sum(rt, n) == sum(1:n) + 100
+end
+
+@testitem "memoized_lookup stays inferrable despite stack hops" setup=[SalsaSetup] begin
+    using .SalsaSetup: new_test_rt
+
+    @derived function infer_probe(rt, n::Int)::Int
+        return n
+    end
+
+    const CAPTURED_RT_TYPE = Ref{Any}(nothing)
+    @derived function capture_runtime_type(rt)::Int
+        CAPTURED_RT_TYPE[] = typeof(rt)
+        return 0
+    end
+
+    rt = new_test_rt()
+    capture_runtime_type(rt)
+    TracingRT = CAPTURED_RT_TYPE[]
+    KeyT = Salsa.DerivedKey{typeof(infer_probe),Tuple{Int}}
+
+    # The hop's `fetch` returns `Any`; the hop wrapper must assert the result back to
+    # what the inline call would have returned, or every lookup — hop or not — pays
+    # for dynamic dispatch downstream (`_unwrap_salsa_value`, `_changed_at`).
+    inferred = only(Base.return_types(Salsa.memoized_lookup, (TracingRT, KeyT)))
+    @test inferred !== Any
 end

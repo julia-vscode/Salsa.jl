@@ -333,8 +333,12 @@ end
 # A `value` is still valid if none of its dependencies have changed.
 function still_valid(runtime, value)
     storage = Salsa.storage(runtime)
+    # Seed the segment counter from the runtime, so the verification descent below
+    # continues the same "native frames since the last stack hop" accounting that
+    # `memoized_lookup` uses (see the INVARIANT on `_TracingRuntime.depth`).
+    depth = Salsa._segment_depth(runtime) + Int32(1)
     for depkey in value.dependencies
-        dep_changed_at = _key_changed_at(runtime, storage, depkey)
+        dep_changed_at = _key_changed_at(runtime, storage, depkey, depth)
         if dep_changed_at > value.verified_at
             return false
         end
@@ -343,17 +347,29 @@ function still_valid(runtime, value)
 end
 
 # Public entry point; unused internally (callers thread `storage` via `_key_changed_at`).
-key_changed_at(runtime, key::DependencyKey) = _key_changed_at(runtime, Salsa.storage(runtime), key)
+# NOTE: When called with a top-level (non-tracing) runtime, `_with_segment_depth` is an
+# identity fallback, so a recompute triggered from deep inside the verification descent
+# restarts the compute counter at 1 while up to STACK_SEGMENT_DEPTH - 1 verification
+# frames already sit on the native stack — worst case ~2x one segment's counted levels
+# before the next hop. Bounded (verification frames are small), just less headroom than
+# the internal, tracing-runtime path.
+function key_changed_at(runtime, key::DependencyKey)
+    return _key_changed_at(
+        runtime, Salsa.storage(runtime), key, Salsa._segment_depth(runtime) + Int32(1)
+    )
+end
 
 # Manual union split: with `key` narrowed by `isa`, each call below resolves
 # to exactly one (@nospecialize'd) method, so the isbits runtime is passed
 # unboxed — a dynamic dispatch here would box it (and the returned Int) once
 # per dependency edge, tens of MB of garbage per whole-graph verification.
-Base.@inline function _key_changed_at(runtime, storage::DefaultStorage, key::DependencyKey)::Revision
+Base.@inline function _key_changed_at(
+    runtime, storage::DefaultStorage, key::DependencyKey, depth::Int32
+)::Revision
     if key isa InputKey
         return _input_changed_at(runtime, storage, key)
     else
-        return _derived_changed_at(runtime, storage, key)
+        return _derived_changed_at(runtime, storage, key, depth)
     end
 end
 
@@ -367,6 +383,10 @@ end
 # instance regardless of the key's function/argument types.
 function _input_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::InputKey))::Revision
     v = @lock storage.lock get(storage.inputs_map, key, nothing)
+    # No segment-depth accounting needed on this fallback: input lookups can't recurse
+    # through Salsa. A lazy input's callback IS user code, but it receives only the user
+    # context — never a Runtime — so it cannot re-enter the derived-function machinery
+    # (see `_needs_fresh_stack` and `get_lazy_input_function`).
     v === nothing && return _changed_at(memoized_lookup(runtime, key))
     return v.changed_at
 end
@@ -379,18 +399,48 @@ end
 _probe_derived(map::Dict{TT,DerivedValue{Any}}, key::DerivedKey{F,TT}) where {F,TT} =
     get(map, key.args, nothing)
 
-function _derived_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::DerivedKey))::Revision
+# `depth` continues the runtime's stack-segment counter through this recursion (one
+# count per verification level), because these frames consume native stack that
+# `new_trace_runtime!` never sees. Two obligations follow (the INVARIANT on
+# `_TracingRuntime.depth`):
+#   1. the recursion itself hops onto a fresh task stack at every multiple of
+#      STACK_SEGMENT_DEPTH, exactly like `memoized_lookup`, and
+#   2. recomputations triggered from inside the descent carry the counter back into
+#      the runtime (`_with_segment_depth`), so `memoized_lookup`'s own hops account
+#      for the verification frames already on this stack.
+# Verification frames are much smaller than full derived-call frames, so counting
+# them 1:1 in the same currency is conservative — it just hops slightly more often
+# (one cheap Task per STACK_SEGMENT_DEPTH verified nodes).
+function _derived_changed_at(
+    runtime, storage::DefaultStorage, @nospecialize(key::DerivedKey), depth::Int32
+)::Revision
+    if depth % Salsa.STACK_SEGMENT_DEPTH == 0
+        # Cold path, once per STACK_SEGMENT_DEPTH verified nodes: the closure (and the
+        # Task inside the helper) allocate, which is why this isn't inlined below.
+        return Salsa._call_on_fresh_stack(
+            () -> _derived_changed_at_impl(runtime, storage, key, depth)
+        )::Revision
+    end
+    return _derived_changed_at_impl(runtime, storage, key, depth)
+end
+
+function _derived_changed_at_impl(
+    runtime, storage::DefaultStorage, @nospecialize(key::DerivedKey), depth::Int32
+)::Revision
     local v
     @lock storage.lock begin
         map = get(storage.derived_function_maps, typeof(key), nothing)
         v = map === nothing ? nothing : _probe_derived(map, key)
     end
-    v === nothing && return _changed_at(memoized_lookup(runtime, key))
+    v === nothing &&
+        return _changed_at(memoized_lookup(Salsa._with_segment_depth(runtime, depth), key))
     v = v::DerivedValue{Any}
     v.verified_at == storage.current_revision && return v.changed_at
     for dep in v.dependencies
-        if _key_changed_at(runtime, storage, dep) > v.verified_at
-            return _changed_at(memoized_lookup(runtime, key))
+        if _key_changed_at(runtime, storage, dep, depth + Int32(1)) > v.verified_at
+            return _changed_at(
+                memoized_lookup(Salsa._with_segment_depth(runtime, depth), key)
+            )
         end
     end
     # All deps unchanged since this value was last verified: mark it verified
