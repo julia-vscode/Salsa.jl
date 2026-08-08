@@ -136,9 +136,10 @@ function Salsa._previous_output_internal(
     derived_key, args = key, key.args
 
     previous_output = nothing
+    RT = Any
 
     @lock storage.lock begin
-        cache = get_map_for_key(storage, derived_key)
+        cache = get_map_for_key(storage, derived_key, RT)
         if haskey(cache, args)
             previous_output = getindex(cache, args)
         end
