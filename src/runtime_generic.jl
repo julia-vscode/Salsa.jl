@@ -1,6 +1,10 @@
 ########## Lookups
 
 function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
+    # Cancellation point: fires on every derived/input lookup edge, before any trace is
+    # acquired (so there is nothing to clean up if it throws).
+    throw_if_cancellation_requested(rt)
+
     # NOTE: It is important that the tracing happens around all internal computations for
     # derived functions and input functions, as we want to be sure we record _all_
     # dependencies, even those where the result is already cached.
@@ -27,7 +31,13 @@ function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
         # throw a DerivedFunctionException for the _current_ salsa stack trace. So even if,
         # e.g., this is a TaskFailedException wrapping a DerivedFunctionException, we still
         # want to wrap that one more time to ensure we pretty print the whole stack. :)
-        if !(e isa DerivedFunctionException)
+        if e isa OperationCanceledException
+            # Cancellation is not an error condition: let it propagate unwrapped so
+            # callers can catch `OperationCanceledException` directly at the top level.
+            # (As above, deliberately `isa`: a cancellation that crosses a task boundary
+            # arrives as a TaskFailedException and still gets wrapped.)
+            rethrow()
+        elseif !(e isa DerivedFunctionException)
             # Include the current summarized Salsa trace in the exception for improved error
             # reporting.
             rethrow(DerivedFunctionException(e, collect_call_stack(rt)))

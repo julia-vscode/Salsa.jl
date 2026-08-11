@@ -35,6 +35,10 @@ include("runtime_generic.jl")
 include("runtime_top_level.jl")
 include("runtime_tracing.jl")
 
+# First-class cancellation support: attach a CancellationTokens.CancellationToken to a
+# Runtime via `with_cancellation`; the machinery polls it in `memoized_lookup`.
+include("cancellation.jl")
+
 # --- Macro utils -----
 
 # Return an array of the Symbol names of every argument in a function definition. To ensure
