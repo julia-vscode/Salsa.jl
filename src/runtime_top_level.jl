@@ -23,6 +23,15 @@ mutable struct _TopLevelRuntime{CT,ST<:AbstractSalsaStorage} <: Runtime{CT,ST}
 
     # The storage is where all the tracking of state and invalidation happens.
     storage::ST
+
+    # Optional cancellation token, attached per top-level call via `with_cancellation`.
+    # `nothing` means "not cancellable". Like `context`, this does not affect Salsa
+    # invalidation / re-evaluation — it is deliberately excluded from memoization keys.
+    cancellation_token::Union{Nothing,CancellationToken}
+end
+
+function _TopLevelRuntime{CT,ST}(ctx::CT, st::ST) where {CT,ST<:AbstractSalsaStorage}
+    return _TopLevelRuntime{CT,ST}(ctx, st, nothing)
 end
 
 ########## Implementation of Runtime API

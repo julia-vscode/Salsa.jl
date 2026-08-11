@@ -87,6 +87,64 @@ The callback signature is `callback(context, args...)` where `context` is the Ru
 
 You can override a lazy-computed value with `set_input!`, and you can delete it with the generated `delete_*!` function to force recomputation on next access.
 
+### Cancellation
+
+Salsa has first-class support for cancelling in-flight computations, built on
+[CancellationTokens.jl](https://github.com/davidanthoff/CancellationTokens.jl). Attach a
+token to a runtime with `Salsa.with_cancellation`, and pass the resulting runtime to your
+derived-function calls:
+
+```julia
+using CancellationTokens
+
+src = CancellationTokenSource()          # or CancellationTokenSource(30) for a timeout
+rt2 = Salsa.with_cancellation(rt, get_token(src))
+
+my_derived_function(rt2, args...)        # cancellable call
+# ... from another task:
+cancel(src)
+```
+
+Once cancellation is requested, the call throws `CancellationTokens.OperationCanceledException`.
+The exception arrives **unwrapped** (never inside a `DerivedFunctionException`) — cancellation
+is not an error condition. A cancelled call caches nothing, and the runtime/storage remains
+fully usable afterwards; simply attach a fresh token for the next call.
+
+The Salsa machinery polls the token automatically between every derived-function/input
+lookup and during cache validation, so cancellation is responsive without any user code
+changes. For long-running loops *inside* a single derived function, poll explicitly:
+
+```julia
+@derived function my_expensive_function(rt, x)
+    for item in huge_collection
+        Salsa.throw_if_cancellation_requested(rt)
+        # ... expensive work ...
+    end
+end
+```
+
+Convenience forms for annotating an existing call site:
+
+```julia
+Salsa.with_cancellation(rt, token) do rt      # do-block form
+    my_derived_function(rt, x)
+end
+
+Salsa.@cancellable token my_derived_function(rt, x)   # macro form
+```
+
+Notes:
+
+- `with_cancellation` returns a new runtime sharing the same storage and context; memoized
+  values are shared with the original runtime, and concurrent top-level calls with
+  different tokens are safe.
+- `Salsa.cancellation_token(rt)` returns the attached token (or `nothing`), both at the
+  top level and inside derived functions.
+- A cancellation that crosses a task boundary inside a derived function (e.g. via
+  `@spawn`) arrives as a `TaskFailedException` and is then wrapped in
+  `DerivedFunctionException` like any other error; use
+  `ExceptionUnwrapping.has_wrapped_exception(e, OperationCanceledException)` to detect it.
+
 ### Flags
 
 For maximum performance in deployed software, you can disable all runtime assertions and debug code by setting this environment variable before building Salsa: `SALSA_STATIC_DEBUG=false`.

@@ -5,6 +5,8 @@ using ..Salsa:
     Runtime, AbstractSalsaStorage, memoized_lookup, get_user_function, collect_trace
 using ..Salsa: DependencyKey, DerivedKey, InputKey, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
+using ..Salsa: cancellation_token, throw_if_cancellation_requested
+import ..Salsa.CancellationTokens
 using Base.Threads: Atomic, atomic_add!, atomic_sub!
 using Base: @lock
 
@@ -259,6 +261,14 @@ function Salsa._memoized_lookup_internal(
                 empty!(trace.ordered_deps)
                 try
                     v = Salsa.TraceLogging.@trace string(_derived_func_name(key)) NamedTuple{Salsa._derived_arg_names(key)}(key.args) user_func(runtime, key.args...)
+                catch
+                    # The swap above emptied existing_value's real dependency list, and
+                    # user_func recorded only a partial one before throwing (e.g. due to
+                    # cancellation). Leaving that behind could make a later still_valid()
+                    # wrongly validate the stale value against the partial dependency
+                    # list. Drop the entry entirely so the next lookup recomputes.
+                    @lock storage.lock delete!(cache, args)
+                    rethrow()
                 finally
                     # Swap back the dependency vectors so the vector isn't modified by
                     # future traces.
@@ -332,6 +342,10 @@ end
 
 # A `value` is still valid if none of its dependencies have changed.
 function still_valid(runtime, value)
+    # Cancellation point: whole-graph verification can walk many nodes without ever
+    # passing through `memoized_lookup`, so poll the token per visited node here (we are
+    # outside storage.lock).
+    throw_if_cancellation_requested(runtime)
     storage = Salsa.storage(runtime)
     for depkey in value.dependencies
         dep_changed_at = _key_changed_at(runtime, storage, depkey)
@@ -380,6 +394,9 @@ _probe_derived(map::Dict{TT,DerivedValue{Any}}, key::DerivedKey{F,TT}) where {F,
     get(map, key.args, nothing)
 
 function _derived_changed_at(runtime, storage::DefaultStorage, @nospecialize(key::DerivedKey))::Revision
+    # Cancellation point for the verification fast path (see `still_valid`); one cheap
+    # atomic load per visited node, checked before taking the lock.
+    throw_if_cancellation_requested(runtime)
     local v
     @lock storage.lock begin
         map = get(storage.derived_function_maps, typeof(key), nothing)
@@ -425,6 +442,10 @@ function Salsa._memoized_lookup_internal(
     try
         # Check cache — may loop back here after waiting on another thread's computation.
         while true
+            # Cancellation point: don't start (or re-start, after a wakeup) computing a
+            # lazy input on behalf of a cancelled caller.
+            throw_if_cancellation_requested(runtime)
+
             val = get(cache, key, nothing)
             if val !== nothing
                 return val
@@ -435,7 +456,32 @@ function Salsa._memoized_lookup_internal(
             if cond !== nothing
                 # Another thread is computing this key. Wait for it to finish, then
                 # loop back to re-check the cache.
-                wait(cond)  # atomically releases lock, sleeps, re-acquires lock
+                token = cancellation_token(runtime)
+                if token === nothing
+                    wait(cond)  # atomically releases lock, sleeps, re-acquires lock
+                else
+                    # Cancellable wait: wake this waiter if its token fires. The sentinel
+                    # Condition uses storage.lock as its lock, so notifying under
+                    # storage.lock is correct. The callback runs synchronously on the
+                    # cancelling task (or immediately, reentrantly, if the token is
+                    # already cancelled); storage.lock is never held across user code, so
+                    # this cannot deadlock. Spurious wakeups of other same-key waiters
+                    # just loop and re-wait.
+                    reg = CancellationTokens.register(token) do
+                        @lock storage.lock notify(cond; all = true)
+                    end
+                    try
+                        # Re-check under the lock now that the callback is registered: if
+                        # the token fired before registration, the callback's notify ran
+                        # before we were enqueued and the wait would miss it. After this
+                        # point no wakeup can be lost — the callback must take
+                        # storage.lock, which we hold until `wait` enqueues us.
+                        throw_if_cancellation_requested(runtime)
+                        wait(cond)
+                    finally
+                        close(reg)
+                    end
+                end
                 continue
             end
 
