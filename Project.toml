@@ -1,4 +1,4 @@
-version = "2.5.3"
+version = "2.5.4-DEV"
 name = "Salsa"
 authors = ["Nathan Daly <nhdaly@gmail.com>", "Todd J. Green <todd.green@relational.ai>"]
 uuid = "1fbf2c77-44e2-4d5d-8131-0fa618a5c278"
