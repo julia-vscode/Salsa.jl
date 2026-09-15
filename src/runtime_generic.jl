@@ -1,6 +1,72 @@
 ########## Lookups
 
 function memoized_lookup(rt::Runtime, dependency_key::DependencyKey)
+    # Derived functions recurse through user code, so a deep chain of derived-function
+    # calls consumes native stack proportional to its depth and would eventually crash
+    # with an unrecoverable StackOverflowError. To support arbitrarily deep chains, we
+    # hop onto a fresh task stack every STACK_SEGMENT_DEPTH nested calls, so the
+    # recursion is bounded by heap size rather than stack size.
+    if _needs_fresh_stack(rt, dependency_key)
+        return _memoized_lookup_on_fresh_stack(rt, dependency_key)
+    end
+    return _memoized_lookup_impl(rt, dependency_key)
+end
+
+# Fallback: top-level calls and input lookups never need a fresh stack. The method for
+# nested derived-function calls is defined in runtime_tracing.jl.
+_needs_fresh_stack(::Runtime, ::DependencyKey) = false
+
+@noinline function _memoized_lookup_on_fresh_stack(rt::Runtime, dependency_key::DependencyKey)
+    # `fetch` on the hop task infers `Any`, which would poison `memoized_lookup`'s
+    # return type for every lookup (shallow, non-hopping chains included) — assert the
+    # result back to exactly what the inline `_memoized_lookup_impl` call would have
+    # returned. `promote_op` is inference-based and constant-folds at compile time.
+    T = Base.promote_op(_memoized_lookup_impl, typeof(rt), typeof(dependency_key))
+    return _call_on_fresh_stack(() -> _memoized_lookup_impl(rt, dependency_key))::T
+end
+
+# Run `f()` on a freshly scheduled task and return its result, so that `f`'s recursion
+# continues from an empty native stack. Used for the stack-segment hops in both
+# `memoized_lookup` and the verification fast path (`_derived_changed_at`).
+# Two intentional, documented differences vs. plain recursion:
+#   - Native backtraces (`catch_backtrace()`, `current_exceptions()`) are truncated at
+#     segment boundaries and gain a TaskFailedException "caused by" entry; the Salsa
+#     trace carried inside DerivedFunctionException is complete and unaffected.
+#   - If the caller is interrupted while blocked in `fetch` (e.g. InterruptException),
+#     the child segment keeps running detached until it finishes: it releases its
+#     traces safely, but holds `derived_functions_active` up until then, so an
+#     immediate subsequent `set_input!` can fail its no-active-deriveds assertion.
+#     (Pre-existing related hazard: the child's closure also captures the isbits
+#     runtime's raw pointer to the parent Runtime, which must stay alive until the
+#     child finishes.)
+@noinline function _call_on_fresh_stack(f)
+    t = Task(f)
+    schedule(t)
+    try
+        return fetch(t)
+    catch e
+        if e isa TaskFailedException
+            # Salsa exceptions arrive at segment boundaries already wrapped in a
+            # DerivedFunctionException (with the complete Salsa trace) by
+            # `_memoized_lookup_impl`'s catch block, so rethrow the child's
+            # exception directly: exceptions must surface identically whether or
+            # not the chain happened to cross a stack-segment boundary.
+            throw(ExceptionUnwrapping.unwrap_exception(e))
+        end
+        rethrow()
+    end
+end
+# The segment counter for hop accounting: how many counted levels (derived-function
+# calls + verification levels) sit on the current task chain. Zero for runtimes that
+# haven't entered a derived function. The `_TracingRuntime` method lives in
+# runtime_tracing.jl.
+_segment_depth(::Runtime) = Int32(0)
+
+# Identity fallback; the depth-carrying method for `_TracingRuntime` lives in
+# runtime_tracing.jl.
+_with_segment_depth(rt::Runtime, ::Int32) = rt
+
+function _memoized_lookup_impl(rt::Runtime, dependency_key::DependencyKey)
     # NOTE: It is important that the tracing happens around all internal computations for
     # derived functions and input functions, as we want to be sure we record _all_
     # dependencies, even those where the result is already cached.
