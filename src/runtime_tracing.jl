@@ -91,5 +91,10 @@ end
 
 function previous_output(rt::_TracingRuntime)
     dependency_key = trace(rt).call_stack.dp
-    return _unwrap_salsa_value(rt, _previous_output_internal(rt, dependency_key))
+    maybe_previous_value = _previous_output_internal(rt, dependency_key)
+    if maybe_previous_value === nothing
+        return nothing
+    else
+        return _unwrap_salsa_value(rt, maybe_previous_value)
+    end
 end
