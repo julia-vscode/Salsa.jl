@@ -534,6 +534,29 @@ function Salsa.delete_input!(
     end
 end
 
+function Salsa.evict_derived!(
+    predicate,
+    runtime::_TopLevelRuntimeWithStorage{DefaultStorage},
+)
+    storage = Salsa.storage(runtime)
+
+    @lock storage.lock begin
+        # Like input mutation, eviction may not run while derived functions are active,
+        # even concurrently on other threads.
+        @assert storage.derived_functions_active[] == 0
+
+        n_evicted = 0
+        for (KT, cache) in storage.derived_function_maps
+            n_before = length(cache)
+            filter!(kv -> !predicate(KT(kv.first)), cache)
+            n_evicted += n_before - length(cache)
+        end
+        # No revision bump: eviction changes no values, so cached dependents remain
+        # valid; evicted entries are simply recomputed on their next lookup.
+        return n_evicted
+    end
+end
+
 function Salsa.new_epoch!(runtime::Salsa.RuntimeWithStorage{DefaultStorage})
 end
 
