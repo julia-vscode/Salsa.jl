@@ -110,6 +110,13 @@ function unmemoized_input_lookup end
 # provided key to the trace.
 function new_trace_runtime! end
 
+# Rebuild a tracing runtime with an updated stack-segment depth counter (identity for
+# non-tracing runtimes). Used by the verification fast path in default_storage.jl: its
+# native recursion is counted by the same counter that triggers stack-segment hops, and
+# any recomputation it triggers must continue from that counter (see `memoized_lookup`
+# and `_derived_changed_at`).
+function _with_segment_depth end
+
 ########## State
 
 """
