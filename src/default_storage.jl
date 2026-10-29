@@ -7,6 +7,7 @@ using ..Salsa: DependencyKey, DerivedKey, InputKey, RuntimeWithStorage,
     _TopLevelRuntimeWithStorage, _TracingRuntimeWithStorage
 using Base.Threads: Atomic, atomic_add!, atomic_sub!
 using Base: @lock
+import Serialization
 
 import ..Salsa.Debug: @debug_mode, @dbg_log_trace
 
@@ -91,6 +92,99 @@ mutable struct DefaultStorage <: AbstractSalsaStorage
 end
 
 const DefaultRuntime = Salsa.Runtime{Salsa.EmptyContext,DefaultStorage}
+
+const STORAGE_FORMAT_VERSION = 1
+const STORAGE_FORMAT_MAGIC = "Salsa.DefaultStorage"
+
+"""
+    Salsa.save(io::IO, runtime::Runtime{EmptyContext,DefaultStorage}; version::AbstractString)
+    Salsa.save(path::AbstractString, runtime::Runtime{EmptyContext,DefaultStorage}; version::AbstractString)
+
+Save the revision, inputs, and derived values. `version` names the code that computed
+them: change it whenever a derived function, or anything it calls, changes, since
+Salsa cannot detect a changed definition. Inputs with a lazy callback are not saved,
+so the callback runs again after loading. A path save replaces the file atomically.
+
+```julia
+Salsa.save("salsa.bin", rt; version = "my-analysis 3")
+```
+"""
+function Salsa.save(
+    io::IO,
+    runtime::Salsa._TopLevelRuntime{Salsa.EmptyContext, DefaultStorage};
+    version::AbstractString,
+)
+    storage = Salsa.storage(runtime)
+    @lock storage.lock begin
+        storage.derived_functions_active[] == 0 ||
+            error("Cannot save Salsa storage while derived functions are active")
+        isempty(storage.in_progress_lazy_inputs) ||
+            error("Cannot save Salsa storage while lazy inputs are active")
+        # A lazy input stands for external data, which may differ in the next process.
+        inputs = filter(storage.inputs_map) do (key, _)
+            Salsa.get_lazy_input_function(runtime, key) === nothing
+        end
+        Serialization.serialize(io, (STORAGE_FORMAT_MAGIC, STORAGE_FORMAT_VERSION, String(version)))
+        Serialization.serialize(io, (storage.current_revision, inputs, storage.derived_function_maps))
+    end
+    return nothing
+end
+
+function Salsa.save(
+    path::AbstractString,
+    runtime::Salsa._TopLevelRuntime{Salsa.EmptyContext, DefaultStorage};
+    version::AbstractString,
+)
+    isdir(path) && error("Cannot save Salsa storage over the directory $(repr(path))")
+    partial, io = mktemp(dirname(abspath(path)))
+    try
+        Salsa.save(io, runtime; version)
+        close(io)
+        # A plain rename replaces the file atomically and never deletes the destination first.
+        Base.Filesystem.rename(partial, path)
+    catch
+        close(io)
+        rm(partial; force = true)
+        rethrow()
+    end
+    return nothing
+end
+
+"""
+    Salsa.load(io::IO; version::AbstractString)::Runtime
+    Salsa.load(path::AbstractString; version::AbstractString)::Runtime
+
+Load a saved default runtime. Define the same input and derived functions first,
+since their types identify cached results, and pass the `version` given to `save`;
+a different version is an error. Every derived value re-verifies its dependencies
+before reuse. Inputs keep their saved values until set again.
+
+```julia
+runtime = Salsa.load("salsa.bin"; version = "my-analysis 3")
+```
+"""
+function Salsa.load(io::IO; version::AbstractString)::Salsa.Runtime
+    header = Serialization.deserialize(io)
+    header isa Tuple{String, Int, String} && header[1:2] == (STORAGE_FORMAT_MAGIC, STORAGE_FORMAT_VERSION) ||
+        error("Unsupported Salsa storage format: $(repr(header))")
+    header[3] == version ||
+        error("Salsa storage saved by version $(repr(header[3])), not $(repr(version))")
+    revision, inputs, derived = Serialization.deserialize(io)
+    revision isa Int64 && revision >= 0 || error("Invalid Salsa storage revision")
+    inputs isa Dict{InputKey, InputValue} || error("Invalid Salsa inputs map")
+    derived isa DerivedFunctionMapType || error("Invalid Salsa derived maps")
+    storage = DefaultStorage()
+    # A new revision makes every derived value check its dependencies before reuse.
+    storage.current_revision = revision + 1
+    storage.inputs_map = inputs
+    storage.derived_function_maps = derived
+    return Salsa.Runtime(storage)
+end
+
+function Salsa.load(path::AbstractString; version::AbstractString)::Salsa.Runtime
+    return open(io -> Salsa.load(io; version), path, "r")
+end
+
 
 function Base.show(io::IO, storage::DefaultStorage)
     current_revision = @lock storage.lock begin

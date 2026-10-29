@@ -53,6 +53,25 @@ Running x_plus_one.
 11
 ```
 
+### Saving a Runtime
+
+Save a default runtime after computing results, then load it in another process:
+
+```julia
+Salsa.save("results.bin", rt; version = "my-analysis 3")
+restored = Salsa.load("results.bin"; version = "my-analysis 3")
+```
+
+`save` and `load` also accept an `IO` object. Load the same input and derived
+function definitions before calling `load`: their function types identify cached
+values. Salsa cannot detect a changed definition, so change `version` whenever a
+derived function or anything it calls changes; `load` rejects another version.
+
+After a load, every derived value re-verifies its dependencies before reuse.
+Inputs keep their saved values until set again, except inputs with a lazy
+callback, which are not saved and run their callback again. A save to a path
+replaces the file atomically.
+
 ### Lazy Inputs
 
 By default, accessing an input that hasn't been set throws an error. With **lazy inputs**, you can provide a callback function that computes the value on-demand the first time it is accessed. This is useful for inputs backed by external data sources (files, databases, etc.) where you want values to be loaded only when needed.

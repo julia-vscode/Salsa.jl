@@ -8,6 +8,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [deps]
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 ExceptionUnwrapping = "460bff9d-24e4-43bc-9d9f-a8973cb893f4"
@@ -17,6 +18,7 @@ test = ["Test", "TestItemRunner"]
 
 [compat]
 Logging = "1.11"
+Serialization = "1.11"
 julia = "1.11"
 MacroTools = "0.5"
 ExceptionUnwrapping = "0.1"

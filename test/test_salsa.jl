@@ -153,6 +153,105 @@ end
     @test ftrace == Set([add_em])
 end
 
+@testitem "DefaultStorage save and load" begin
+    import Serialization
+    using Salsa: Runtime, @derived
+
+    struct Unsaveable end
+    Serialization.serialize(::Serialization.AbstractSerializer, ::Unsaveable) = error("cannot save")
+
+    @declare_input saved_x(rt)::Int
+    @declare_input saved_y(rt)::Int
+    @declare_input saved_unsaveable(rt)::Any
+    leaf_calls = Ref(0)
+    parent_calls = Ref(0)
+    @derived function saved_sum(rt)
+        leaf_calls[] += 1
+        saved_x(rt) + saved_y(rt)
+    end
+    @derived function saved_parent(rt)
+        parent_calls[] += 1
+        2 * saved_sum(rt)
+    end
+
+    original = Runtime()
+    set_saved_x!(original, 1)
+    set_saved_y!(original, 2)
+    @test saved_parent(original) == 6
+    @test (leaf_calls[], parent_calls[]) == (1, 1)
+
+    buffer = IOBuffer()
+    Salsa.save(buffer, original; version = "v1")
+    seekstart(buffer)
+    restored = Salsa.load(buffer; version = "v1")
+    @test restored !== original
+    @test saved_parent(restored) == 6
+    @test (leaf_calls[], parent_calls[]) == (1, 1)
+
+    set_saved_x!(restored, 1)
+    set_saved_y!(restored, 2)
+    @test saved_parent(restored) == 6
+    @test (leaf_calls[], parent_calls[]) == (1, 1)
+
+    set_saved_x!(restored, 2)
+    set_saved_y!(restored, 1)
+    @test saved_parent(restored) == 6
+    @test (leaf_calls[], parent_calls[]) == (2, 1)
+
+    set_saved_x!(restored, 3)
+    @test saved_parent(restored) == 8
+    @test (leaf_calls[], parent_calls[]) == (3, 2)
+
+    mktempdir() do directory
+        path = joinpath(directory, "salsa.bin")
+        Salsa.save(path, restored; version = "v1")
+        @test saved_parent(Salsa.load(path; version = "v1")) == 8
+        @test (leaf_calls[], parent_calls[]) == (3, 2)
+        @test_throws ErrorException Salsa.load(path; version = "v2")
+
+        # A save that fails leaves the earlier file whole and no partial file behind.
+        set_saved_unsaveable!(restored, Unsaveable())
+        @test_throws ErrorException Salsa.save(path, restored; version = "v1")
+        @test readdir(directory) == ["salsa.bin"]
+        @test saved_parent(Salsa.load(path; version = "v1")) == 8
+
+        # A directory destination is refused and keeps its contents.
+        set_saved_unsaveable!(restored, nothing)
+        occupied = joinpath(directory, "occupied")
+        mkpath(joinpath(occupied, "kept"))
+        @test_throws ErrorException Salsa.save(occupied, restored; version = "v1")
+        @test readdir(occupied) == ["kept"]
+        @test sort(readdir(directory)) == ["occupied", "salsa.bin"]
+    end
+
+    @test_throws Exception Salsa.load(IOBuffer("corrupt"); version = "v1")
+    wrong_format = IOBuffer()
+    Serialization.serialize(wrong_format, ("Salsa.DefaultStorage", 999, "v1"))
+    seekstart(wrong_format)
+    @test_throws ErrorException Salsa.load(wrong_format; version = "v1")
+end
+
+@testitem "DefaultStorage save drops lazy inputs" begin
+    using Salsa: Runtime, @derived
+
+    reads = Ref(0)
+    contents = Ref(10)
+    read_source(_ctx) = (reads[] += 1; contents[])
+    @declare_input source_value(rt)::Int read_source
+    @derived doubled_source(rt) = 2 * source_value(rt)
+
+    original = Runtime()
+    @test doubled_source(original) == 20
+    buffer = IOBuffer()
+    Salsa.save(buffer, original; version = "v1")
+    seekstart(buffer)
+
+    # The external data changed between processes: the callback must run again.
+    contents[] = 11
+    restored = Salsa.load(buffer; version = "v1")
+    @test doubled_source(restored) == 22
+    @test reads[] == 2
+end
 
 ###########################
 # Simple API usage

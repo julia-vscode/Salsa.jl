@@ -2,6 +2,9 @@
 
 abstract type AbstractSalsaStorage end
 
+function save end
+function load end
+
 # The functions for a Salsa Storage are declared below, and should all be implemented for
 # concrete instances of AbstractSalsaStorage.
 #
